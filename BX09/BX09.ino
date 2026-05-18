@@ -27,6 +27,11 @@ namespace Physics {
     float peak_rpm = 0;
     float avg_rpm = 0;
 
+    // --- 新增：歷史紀錄與最高紀錄狀態 ---
+    float allTimePeak = 0;     // 生涯最高紀錄
+    float history[8] = {0};    // 儲存最近8次的陣列
+    int historyCount = 0;      // 目前有幾筆歷史紀錄
+
     void reset() {
         count = 0;
         peak_rpm = 0;
@@ -34,10 +39,8 @@ namespace Physics {
     }
 
     void addData(uint16_t val) {
-        // 雜訊過濾邏輯：低於 500 的極端異常值直接拋棄
         if (val > 500 && count < 30) {
             buffer[count++] = val;
-            Serial.printf("%d, ", val);
         }
     }
 
@@ -52,10 +55,42 @@ namespace Physics {
             sum_raw += buffer[j];
         }
 
-        // 核心反比例公式
         peak_rpm = (float)CALIBRATION_K / min_raw;
         avg_rpm = (float)CALIBRATION_K / ((float)sum_raw / count);
+
+        // --- 新增：更新歷史紀錄 (將舊數據往後推) ---
+        for (int i = 7; i > 0; i--) {
+            history[i] = history[i-1];
+        }
+        history[0] = peak_rpm; // 將最新一次紀錄放在最上面 [0]
+        if (historyCount < 8) historyCount++;
+
+        // --- 新增：更新生涯最高轉速 ---
+        if (peak_rpm > allTimePeak) {
+            allTimePeak = peak_rpm;
+        }
+
         return true;
+    }
+}
+namespace Power {
+    const int BAT_ADC_PIN = 1; // Waveshare 1.9" 的電池檢測引腳
+    
+    float getVoltage() {
+        // 讀取 ADC (0-4095) 並轉換為實際電壓
+        int raw = analogRead(BAT_ADC_PIN);
+        // 1.21 是典型的校準常數，根據你的板子精確度可能需要微調
+        float voltage = (raw / 4095.0) * 3.3 * 2.0 * 1.03; 
+        return voltage;
+    }
+
+    int getPercentage() {
+        float v = getVoltage();
+        // 簡單的線性映射：4.2V=100%, 3.4V=0%
+        int percent = (v - 3.4) / (4.2 - 3.4) * 100;
+        if (percent > 100) percent = 100;
+        if (percent < 0) percent = 0;
+        return percent;
     }
 }
 // ==========================================
@@ -67,19 +102,20 @@ namespace UI {
 
     // 根據 Hello World 修正：RST=5, BL=15
     // 注意：Waveshare 1.9" 通常需要開啟 IPS (true) 並且設置正確的 Offset
-    Arduino_GFX *gfx = new Arduino_ST7789(bus, 9 /* RST */,0 /*rotation*/,0/*IPS屏*/,170/*w*/,320/*h*/,35/*起始列偏移（左边）*/,0/*起始行偏移（上边）*/,35/*结束列偏移（右边）*/,0/*结束行偏移（下边）*/);
+    Arduino_GFX *gfx = new Arduino_ST7789(bus, 9 /* RST */,1 /*rotation*/,0/*IPS屏*/,170/*w*/,320/*h*/,35/*起始列偏移（左边）*/,0/*起始行偏移（上边）*/,35/*结束列偏移（右边）*/,0/*结束行偏移（下边）*/);
 
 
-    const int BACKLIGHT_PIN = 15; // 修正背光引腳為 15
+    const int BACKLIGHT_PIN = 15; 
+
+    // 自定義一些不刺眼的顏色
+    #define COLOR_DARKGREY 0x39E7
+    #define COLOR_LIGHTGREY 0xC618
+    #define COLOR_ORANGE 0xFDA0
 
     void init() {
         pinMode(BACKLIGHT_PIN, OUTPUT);
-        digitalWrite(BACKLIGHT_PIN, HIGH); // 先開燈
-        
-        if (!gfx->begin()) {
-            Serial.println("UI: GFX 初始化失敗！請檢查 PSRAM 設定。");
-        }
-        gfx->setRotation(1);
+        digitalWrite(BACKLIGHT_PIN, HIGH); 
+        if (!gfx->begin()) Serial.println("UI: GFX 初始化失敗！");
         gfx->fillScreen(BLACK);
     }
 
@@ -93,28 +129,62 @@ namespace UI {
 
     void showReady() {
         gfx->fillScreen(BLACK);
+        // 如果你有加入 Power 模組，可以在這裡顯示電量
         gfx->setTextColor(GREEN);
         gfx->setTextSize(3);
         gfx->setCursor(20, 60);
-        gfx->println("READY");
+        gfx->println("READY TO LAUNCH");
     }
 
-    void showResults(float peak, float avg) {
+    // --- 修改：接收最高轉速與歷史紀錄陣列 ---
+    void showResults(float currentPeak, float allTimeMax, float* historyArray, int hCount) {
         gfx->fillScreen(BLACK);
+        
+        // ==========================================
+        // 左半邊排版 (X座標 0~170)
+        // ==========================================
         gfx->setTextColor(YELLOW);
         gfx->setTextSize(2);
         gfx->setCursor(10, 20);
         gfx->println("MAX POWER");
         
         gfx->setTextColor(WHITE);
-        gfx->setTextSize(7);
+        // 字體從 7 縮小到 6，避免四位數 RPM 擠到右邊的線
+        gfx->setTextSize(6); 
         gfx->setCursor(10, 50);
-        gfx->printf("%.0f", peak);
+        gfx->printf("%.0f", currentPeak);
         
+        // 將原本的 AVG 替換為最高紀錄 BEST
         gfx->setTextSize(2);
         gfx->setCursor(10, 130);
         gfx->setTextColor(CYAN);
-        gfx->printf("AVG: %.0f RPM", avg);
+        gfx->printf("BEST: %.0f", allTimeMax); 
+
+        // ==========================================
+        // 右半邊排版 (X座標 180~320)
+        // ==========================================
+        // 畫一條垂直分隔線
+        gfx->drawLine(180, 10, 180, 160, COLOR_DARKGREY); 
+        
+        gfx->setTextColor(COLOR_ORANGE);
+        gfx->setTextSize(1);
+        gfx->setCursor(190, 15);
+        gfx->println("RECENT LAUNCHES");
+
+        gfx->setTextSize(2);
+        for (int i = 0; i < hCount; i++) {
+            int y_pos = 35 + (i * 16); // 計算每行的高度 (間距 16px)
+            
+            // 最新的一次用綠色高亮，以前的用灰色
+            if (i == 0) {
+                gfx->setTextColor(GREEN); 
+            } else {
+                gfx->setTextColor(COLOR_LIGHTGREY); 
+            }
+            
+            gfx->setCursor(190, y_pos);
+            gfx->printf("%d. %.0f", i + 1, historyArray[i]);
+        }
     }
 }
 // ==========================================
@@ -146,16 +216,19 @@ namespace BLE_Manager {
             }
 
             // 結算封包
+            // ... (前面的 BLE 代碼不變)
+            // 結算封包
             if (header == 0x73) {
-                if (Physics::calculate()) { // 物理模組計算完成
+                if (Physics::calculate()) { 
                     Serial.println("\n=========================================");
-                    Serial.printf("🎯 發射完成! 有效點: %d\n", Physics::count);
-                    Serial.printf("🔥 最高: %.0f | 📊 平均: %.0f\n", Physics::peak_rpm, Physics::avg_rpm);
+                    Serial.printf("🔥 最高: %.0f | 👑 生涯最高: %.0f\n", Physics::peak_rpm, Physics::allTimePeak);
                     Serial.println("=========================================\n");
                     
-                    UI::showResults(Physics::peak_rpm, Physics::avg_rpm); // UI 模組渲染
+                    // --- 修改：傳遞當前轉速、最高紀錄、歷史陣列給 UI ---
+                    UI::showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount); 
                 }
             }
+        // ... (後面的 BLE 代碼不變)
         }
     }
 
