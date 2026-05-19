@@ -21,76 +21,130 @@
 // 負責處理原始數據、過濾雜訊與反比例運算
 // ==========================================
 namespace Physics {
-    const uint32_t CALIBRATION_K = 7500000; 
-    uint16_t buffer[30]; 
+    uint16_t rawProf[32] = {0};
     int count = 0;
+    
     float peak_rpm = 0;
     float avg_rpm = 0;
 
-    // --- 新增：歷史紀錄與最高紀錄狀態 ---
-    float allTimePeak = 0;     // 生涯最高紀錄
-    float history[8] = {0};    // 儲存最近8次的陣列
-    int historyCount = 0;      // 目前有幾筆歷史紀錄
+    float allTimePeak = 0;     
+    float history[8] = {0};    
+    int historyCount = 0;      
 
     void reset() {
         count = 0;
-        peak_rpm = 0;
-        avg_rpm = 0;
+        memset(rawProf, 0, sizeof(rawProf));
     }
 
     void addData(uint16_t val) {
-        if (val > 500 && count < 30) {
-            buffer[count++] = val;
+        if (val == 0) return; // 拒絕空包彈
+        if (count < 32) {
+            rawProf[count++] = val;
         }
     }
 
     bool calculate() {
-        if (count == 0) return false;
-
-        uint16_t min_raw = 65535;
-        uint32_t sum_raw = 0;
-
-        for (int j = 0; j < count; j++) {
-            if (buffer[j] < min_raw) min_raw = buffer[j];
-            sum_raw += buffer[j];
+        if (count < 5) {
+            // 發射數據太少，視為誤觸
+            count = 0;
+            memset(rawProf, 0, sizeof(rawProf));
+            return false;
         }
 
-        peak_rpm = (float)CALIBRATION_K / min_raw;
-        avg_rpm = (float)CALIBRATION_K / ((float)sum_raw / count);
+        Serial.println("\n=================[ BX-09 RAW PROFILE DATA ]=================");
+        uint16_t T[32] = {0};
+        uint16_t SP[32] = {0};
+        uint16_t size = 0;
+        uint16_t elapsedTime = 0;
 
-        // --- 新增：更新歷史紀錄 (將舊數據往後推) ---
-        for (int i = 7; i > 0; i--) {
-            history[i] = history[i-1];
-        }
-        history[0] = peak_rpm; // 將最新一次紀錄放在最上面 [0]
-        if (historyCount < 8) historyCount++;
+        // 1. 基本解碼
+        for (int i = 0; i < count; i += 1) { 
+            auto nRefs = rawProf[i];
+            if (nRefs == 0) continue; 
 
-        // --- 新增：更新生涯最高轉速 ---
-        if (peak_rpm > allTimePeak) {
-            allTimePeak = peak_rpm;
+            auto dt = static_cast<double>(nRefs) / 125.0;
+            auto sp = static_cast<uint16_t>(60000.0 / dt);
+
+            // 過濾掉絕對不可能的超光速雜訊 (>20000)
+            if (sp > 20000) continue;
+
+            elapsedTime += static_cast<uint16_t>(dt);
+            T[size] = elapsedTime;
+            SP[size] = sp;
+            size += 1;
         }
+
+        Serial.println("\n--- [Step 1] Raw Decoded Profile ---");
+        for (int i = 0; i < size; i++) {
+            Serial.printf("Turn %02d | Time: %4d ms | Speed: %5d RPM\n", i + 1, T[i], SP[i]);
+        }
+
+        // -------------------------------------------------------------------------
+        // 2. 【防護 1：單點突波消除 (Glitch Filter)】
+        // -------------------------------------------------------------------------
+        // 如果轉速在 1 幀內瞬間飆升超過前後的 1.5 倍，判定為感測器讀取錯誤，將其削平
+        for (int i = 1; i < size - 1; i++) {
+            if (SP[i] > SP[i-1] * 1.5 && SP[i] > SP[i+1] * 1.5) {
+                uint16_t smoothed = (SP[i-1] + SP[i+1]) / 2;
+                Serial.printf("⚠️ [Glitch Filter] Turn %02d Spike (%d RPM) smoothed to %d RPM.\n", i + 1, SP[i], smoothed);
+                SP[i] = smoothed;
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // 3. 【防護 2：尋找最高點與防回捲 (Peak Scan & Recoil Cutoff)】
+        // -------------------------------------------------------------------------
+        uint16_t trueMax = 0;
+        int peakIndex = 0;
+        String stopReason = "END_OF_DATA";
+
+        for (int i = 0; i < size; i++) {
+            // 如果轉速跌落谷底 (<1000) 且已經過了前幾圈，代表拉線動作已結束，齒輪開始空轉或回捲
+            // 直接中斷掃描，拒絕後面的任何假高點
+            if (SP[i] < 1000 && i >= 3) {
+                stopReason = "RECOIL_CUTOFF (Speed < 1000)";
+                break; 
+            }
+            
+            if (SP[i] > trueMax) {
+                trueMax = SP[i];
+                peakIndex = i;
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // 4. 印出最終分析報告
+        // -------------------------------------------------------------------------
+        Serial.println("\n--- [Step 2] Algorithm Decision Summary ---");
+        Serial.printf("Stop Reason     : %s\n", stopReason.c_str());
+        Serial.printf("Final True Peak : %d RPM (Found at Turn %d)\n", trueMax, peakIndex + 1);
+        Serial.println("============================================================\n");
+
+        // -------------------------------------------------------------------------
+        // 5. 儲存結果並釋放記憶體
+        // -------------------------------------------------------------------------
+        if (trueMax > 0) {
+            peak_rpm = trueMax;
+            
+            float sum_sp = 0;
+            for (int i = 0; i < size; i++) sum_sp += SP[i];
+            avg_rpm = size > 0 ? (sum_sp / size) : 0;
+
+            for (int i = 7; i > 0; i--) {
+                history[i] = history[i-1];
+            }
+            history[0] = peak_rpm; 
+            if (historyCount < 8) historyCount++;
+
+            if (peak_rpm > allTimePeak) {
+                allTimePeak = peak_rpm;
+            }
+        }
+
+        count = 0;
+        memset(rawProf, 0, sizeof(rawProf));
 
         return true;
-    }
-}
-namespace Power {
-    const int BAT_ADC_PIN = 1; // Waveshare 1.9" 的電池檢測引腳
-    
-    float getVoltage() {
-        // 讀取 ADC (0-4095) 並轉換為實際電壓
-        int raw = analogRead(BAT_ADC_PIN);
-        // 1.21 是典型的校準常數，根據你的板子精確度可能需要微調
-        float voltage = (raw / 4095.0) * 3.3 * 2.0 * 1.03; 
-        return voltage;
-    }
-
-    int getPercentage() {
-        float v = getVoltage();
-        // 簡單的線性映射：4.2V=100%, 3.4V=0%
-        int percent = (v - 3.4) / (4.2 - 3.4) * 100;
-        if (percent > 100) percent = 100;
-        if (percent < 0) percent = 0;
-        return percent;
     }
 }
 // ==========================================
@@ -111,59 +165,42 @@ namespace UI {
     #define COLOR_DARKGREY 0x39E7
     #define COLOR_LIGHTGREY 0xC618
     #define COLOR_ORANGE 0xFDA0
-
-    void init() {
-        pinMode(BACKLIGHT_PIN, OUTPUT);
-        digitalWrite(BACKLIGHT_PIN, HIGH); 
-        if (!gfx->begin()) Serial.println("UI: GFX 初始化失敗！");
-        gfx->fillScreen(BLACK);
+// 1. 狀態燈更新函數
+    void updateStatus(bool isReady) {
+        gfx->fillRect(5, 150, 160, 20, BLACK); 
+        gfx->setTextSize(1);
+        if (isReady) {
+            gfx->fillCircle(12, 156, 4, GREEN); 
+            gfx->setTextColor(GREEN);
+            gfx->setCursor(22, 153);
+            gfx->println("LOADED & READY"); 
+        } else {
+            gfx->fillCircle(12, 156, 4, COLOR_ORANGE); 
+            gfx->setTextColor(COLOR_ORANGE);
+            gfx->setCursor(22, 153);
+            gfx->println("STANDBY...");
+        }
     }
 
-    void showSearching() {
-        gfx->fillScreen(BLACK);
-        gfx->setTextColor(WHITE);
-        gfx->setTextSize(2);
-        gfx->setCursor(20, 70);
-        gfx->println("Searching BX-09...");
-    }
-
-    void showReady() {
-        gfx->fillScreen(BLACK);
-        // 如果你有加入 Power 模組，可以在這裡顯示電量
-        gfx->setTextColor(GREEN);
-        gfx->setTextSize(3);
-        gfx->setCursor(20, 60);
-        gfx->println("READY TO LAUNCH");
-    }
-
-    // --- 修改：接收最高轉速與歷史紀錄陣列 ---
+    // 2. 顯示成績函數
     void showResults(float currentPeak, float allTimeMax, float* historyArray, int hCount) {
         gfx->fillScreen(BLACK);
         
-        // ==========================================
-        // 左半邊排版 (X座標 0~170)
-        // ==========================================
         gfx->setTextColor(YELLOW);
         gfx->setTextSize(2);
         gfx->setCursor(10, 20);
         gfx->println("MAX POWER");
         
         gfx->setTextColor(WHITE);
-        // 字體從 7 縮小到 6，避免四位數 RPM 擠到右邊的線
         gfx->setTextSize(6); 
         gfx->setCursor(10, 50);
         gfx->printf("%.0f", currentPeak);
         
-        // 將原本的 AVG 替換為最高紀錄 BEST
         gfx->setTextSize(2);
         gfx->setCursor(10, 130);
         gfx->setTextColor(CYAN);
         gfx->printf("BEST: %.0f", allTimeMax); 
 
-        // ==========================================
-        // 右半邊排版 (X座標 180~320)
-        // ==========================================
-        // 畫一條垂直分隔線
         gfx->drawLine(180, 10, 180, 160, COLOR_DARKGREY); 
         
         gfx->setTextColor(COLOR_ORANGE);
@@ -173,18 +210,31 @@ namespace UI {
 
         gfx->setTextSize(2);
         for (int i = 0; i < hCount; i++) {
-            int y_pos = 35 + (i * 16); // 計算每行的高度 (間距 16px)
-            
-            // 最新的一次用綠色高亮，以前的用灰色
+            int y_pos = 35 + (i * 16); 
             if (i == 0) {
                 gfx->setTextColor(GREEN); 
             } else {
                 gfx->setTextColor(COLOR_LIGHTGREY); 
             }
-            
             gfx->setCursor(190, y_pos);
             gfx->printf("%d. %.0f", i + 1, historyArray[i]);
         }
+        
+        updateStatus(true); 
+    }
+
+    // 3. 初始化函數
+    void init() {
+        pinMode(BACKLIGHT_PIN, OUTPUT);
+        digitalWrite(BACKLIGHT_PIN, HIGH); 
+        if (!gfx->begin()) Serial.println("UI: GFX 初始化失敗！");
+        
+        gfx->fillScreen(BLACK);
+        
+        float emptyHistory[8] = {0};
+        showResults(0, 0, emptyHistory, 0); 
+        
+        updateStatus(false); 
     }
 }
 // ==========================================
@@ -205,7 +255,7 @@ namespace BLE_Manager {
             if (length >= 4 && pData[3] == 0x04) {
                 Serial.println("\n[狀態] 🟢 陀螺已安裝");
                 Physics::reset();  // 呼叫物理模組重置數據
-                UI::showReady();   // 呼叫 UI 模組更新畫面
+                UI::updateStatus(true);  // 點亮綠燈  // 呼叫 UI 模組更新畫面
             } 
         }
         // 威力曲線數據接收
@@ -245,7 +295,7 @@ namespace BLE_Manager {
 
     void connectTask() {
         if (!isConnected) {
-            UI::showSearching();
+            UI::updateStatus(false);
             if (client != nullptr) delete client;
             
             client = BLEDevice::createClient();
@@ -265,7 +315,7 @@ namespace BLE_Manager {
                     }
                 }
                 Serial.println(">>> 準備就緒！請安裝陀螺 <<<");
-                UI::showReady();
+                UI::updateStatus(true);
             } else {
                 delay(3000); // 失敗則等待 3 秒再試
             }
