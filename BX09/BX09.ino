@@ -31,9 +31,15 @@ namespace Physics {
     float history[8] = {0};    
     int historyCount = 0;      
 
+    // 👉 1. 將轉速陣列和圈數提升到這裡，讓 UI 可以讀取！
+    uint16_t SP[32] = {0};
+    uint16_t size = 0;
+
     void reset() {
         count = 0;
         memset(rawProf, 0, sizeof(rawProf));
+        memset(SP, 0, sizeof(SP)); // 👉 記得清空
+        size = 0;                  // 👉 記得清空
     }
 
     void addData(uint16_t val) {
@@ -43,19 +49,23 @@ namespace Physics {
         }
     }
 
-    bool calculate() {
-        if (count < 5) {
-            // 發射數據太少，視為誤觸
-            count = 0;
-            memset(rawProf, 0, sizeof(rawProf));
-            return false;
-        }
+bool calculate() {
+    // ... 略 ...
+    uint16_t T[32] = {0};
+    uint16_t elapsedTime = 0;
+
+    // 🟢 不能有 uint16_t，要直接對全域變數清空：
+    memset(SP, 0, sizeof(SP));
+    size = 0;
 
         Serial.println("\n=================[ BX-09 RAW PROFILE DATA ]=================");
-        uint16_t T[32] = {0};
-        uint16_t SP[32] = {0};
-        uint16_t size = 0;
-        uint16_t elapsedTime = 0;
+        // 🟢 正確的重置語法：
+    memset(T, 0, sizeof(T)); // 陣列用 memset 函式清空
+    elapsedTime = 0;         // 單一變數直接 = 0 即可
+
+    // (下面這段重複清空 SP 的動作可以保留或刪除，建議留著最上面的就好)
+    memset(SP, 0, sizeof(SP));
+    size = 0;
 
         // 1. 基本解碼
         for (int i = 0; i < count; i += 1) { 
@@ -65,7 +75,6 @@ namespace Physics {
             auto dt = static_cast<double>(nRefs) / 125.0;
             auto sp = static_cast<uint16_t>(60000.0 / dt);
 
-            // 過濾掉絕對不可能的超光速雜訊 (>20000)
             if (sp > 20000) continue;
 
             elapsedTime += static_cast<uint16_t>(dt);
@@ -74,10 +83,6 @@ namespace Physics {
             size += 1;
         }
 
-        Serial.println("\n--- [Step 1] Raw Decoded Profile ---");
-        for (int i = 0; i < size; i++) {
-            Serial.printf("Turn %02d | Time: %4d ms | Speed: %5d RPM\n", i + 1, T[i], SP[i]);
-        }
 
         // -------------------------------------------------------------------------
         // 2. 【防護 1：單點突波消除 (Glitch Filter)】
@@ -156,85 +161,158 @@ namespace UI {
 
     // 根據 Hello World 修正：RST=5, BL=15
     // 注意：Waveshare 1.9" 通常需要開啟 IPS (true) 並且設置正確的 Offset
-    Arduino_GFX *gfx = new Arduino_ST7789(bus, 9 /* RST */,1 /*rotation*/,0/*IPS屏*/,170/*w*/,320/*h*/,35/*起始列偏移（左边）*/,0/*起始行偏移（上边）*/,35/*结束列偏移（右边）*/,0/*结束行偏移（下边）*/);
+    Arduino_GFX *gfx = new Arduino_ST7789(bus, 9 /* RST */,1 /*rotation*/,1/*IPS屏*/,170/*w*/,320/*h*/,35/*起始列偏移（左边）*/,0/*起始行偏移（上边）*/,35/*结束列偏移（右边）*/,0/*结束行偏移（下边）*/);
 
 
-    const int BACKLIGHT_PIN = 15; 
+   // 1. 獨立顏色定義 (RGB565)
+    #define GFX_BLACK     0x0000
+    #define GFX_WHITE     0xFFFF
+    #define GFX_GREEN     0x07E0
+    #define GFX_YELLOW    0xFFE0
+    #define GFX_CYAN      0x07FF
+    #define GFX_DARKGREY  0x4208
+    #define GFX_LIGHTGREY 0xC618
+    #define GFX_ORANGE    0xFD20
+    #define GFX_RED       0xF800
 
-    // 自定義一些不刺眼的顏色
-    #define COLOR_DARKGREY 0x39E7
-    #define COLOR_LIGHTGREY 0xC618
-    #define COLOR_ORANGE 0xFDA0
-// 1. 狀態燈更新函數
-    void updateStatus(bool isReady) {
-        gfx->fillRect(5, 150, 160, 20, BLACK); 
-        gfx->setTextSize(1);
-        if (isReady) {
-            gfx->fillCircle(12, 156, 4, GREEN); 
-            gfx->setTextColor(GREEN);
-            gfx->setCursor(22, 153);
-            gfx->println("LOADED & READY"); 
-        } else {
-            gfx->fillCircle(12, 156, 4, COLOR_ORANGE); 
-            gfx->setTextColor(COLOR_ORANGE);
-            gfx->setCursor(22, 153);
-            gfx->println("STANDBY...");
-        }
-    }
+    // 2. 螢幕佈局常數
+    const int SCREEN_W = 320;
+    const int SCREEN_H = 170;
+    const int LEFT_PANEL_W = 110;  
+    const int CHART_X_START = 125; 
+    const int CHART_Y_START = 145; 
+    const int CHART_W = 180;       
+    const int CHART_H = 120;       
 
-    // 2. 顯示成績函數
-    void showResults(float currentPeak, float allTimeMax, float* historyArray, int hCount) {
-        gfx->fillScreen(BLACK);
-        
-        gfx->setTextColor(YELLOW);
-        gfx->setTextSize(2);
-        gfx->setCursor(10, 20);
-        gfx->println("MAX POWER");
-        
-        gfx->setTextColor(WHITE);
-        gfx->setTextSize(6); 
-        gfx->setCursor(10, 50);
-        gfx->printf("%.0f", currentPeak);
-        
-        gfx->setTextSize(2);
-        gfx->setCursor(10, 130);
-        gfx->setTextColor(CYAN);
-        gfx->printf("BEST: %.0f", allTimeMax); 
+    // 👉 新增：記憶目前的藍牙狀態
+    bool currentBleState = false; 
+    volatile bool readyToDraw = false;
+    // 提前宣告，讓 init() 可以認識它
+    void updateStatus(bool isConnected);
+    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount);
 
-        gfx->drawLine(180, 10, 180, 160, COLOR_DARKGREY); 
-        
-        gfx->setTextColor(COLOR_ORANGE);
-        gfx->setTextSize(1);
-        gfx->setCursor(190, 15);
-        gfx->println("RECENT LAUNCHES");
-
-        gfx->setTextSize(2);
-        for (int i = 0; i < hCount; i++) {
-            int y_pos = 35 + (i * 16); 
-            if (i == 0) {
-                gfx->setTextColor(GREEN); 
-            } else {
-                gfx->setTextColor(COLOR_LIGHTGREY); 
-            }
-            gfx->setCursor(190, y_pos);
-            gfx->printf("%d. %.0f", i + 1, historyArray[i]);
-        }
-        
-        updateStatus(true); 
-    }
-
-    // 3. 初始化函數
+    // 3. 唯一的初始化功能
     void init() {
-        pinMode(BACKLIGHT_PIN, OUTPUT);
-        digitalWrite(BACKLIGHT_PIN, HIGH); 
-        if (!gfx->begin()) Serial.println("UI: GFX 初始化失敗！");
+        if (gfx) {
+            gfx->begin();
+            gfx->setRotation(1); 
+            gfx->fillScreen(GFX_BLACK);
+        }
+        // 👉 開機馬上畫出「初始狀態」的儀表板 (讀取 Physics 的預設 0 值)
+        showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount);
         
-        gfx->fillScreen(BLACK);
+        // 預設為未連線 (亮紅燈)
+        updateStatus(false);
+    }
+
+    // 4. 藍牙狀態燈
+    void updateStatus(bool isConnected) {
+        currentBleState = isConnected; // 記住狀態
+        if (!gfx) return;
+        gfx->fillCircle(310, 10, 4, isConnected ? GFX_GREEN : GFX_RED);
+    }
+
+    // 5. 核心折線圖與看板繪製邏輯
+    void drawDashboard(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount, uint16_t turnData[], int turnCount) {
+        if (!gfx) return;
         
-        float emptyHistory[8] = {0};
-        showResults(0, 0, emptyHistory, 0); 
+        gfx->fillScreen(GFX_BLACK);
+
+        // ==========================================
+        // 左邊面板：數據區
+        // ==========================================
+        gfx->drawLine(LEFT_PANEL_W, 0, LEFT_PANEL_W, SCREEN_H, GFX_DARKGREY); 
+
+        gfx->setTextColor(GFX_GREEN); gfx->setTextSize(1);
+        gfx->setCursor(5, 5); gfx->print("Current RPM");
+        gfx->setTextColor(GFX_WHITE); gfx->setTextSize(2); 
+        gfx->setCursor(5, 18); gfx->print(currentPeak);
+
+        gfx->setTextColor(GFX_YELLOW); gfx->setTextSize(1);
+        gfx->setCursor(5, 42); gfx->print("All-Time Best");
+        gfx->setTextColor(GFX_WHITE); gfx->setTextSize(2);
+        gfx->setCursor(5, 55); gfx->print(allTimePeak);
+
+        gfx->setTextColor(GFX_CYAN); gfx->setTextSize(1);
+        gfx->setCursor(5, 82); gfx->print("Recent Hist.");
         
-        updateStatus(false); 
+        gfx->setTextColor(GFX_LIGHTGREY); gfx->setTextSize(1); 
+        int histToShow = (histCount > 5) ? 5 : histCount;
+        for (int i = 0; i < histToShow; i++) {
+            gfx->setCursor(5, 98 + (i * 14));
+            gfx->print(i + 1); gfx->print(". "); gfx->print((int)history[i]);
+        }
+
+// ==========================================
+        // 右邊面板：轉速折線圖
+        // ==========================================
+        gfx->drawLine(CHART_X_START, CHART_Y_START, CHART_X_START + CHART_W, CHART_Y_START, GFX_WHITE); 
+        gfx->drawLine(CHART_X_START, CHART_Y_START, CHART_X_START, CHART_Y_START - CHART_H, GFX_WHITE); 
+
+        if (turnCount >= 2) { 
+            uint16_t maxRpmInChart = 0;
+            for (int i = 0; i < turnCount; i++) {
+                if (turnData[i] > maxRpmInChart) maxRpmInChart = turnData[i];
+            }
+            maxRpmInChart = maxRpmInChart * 1.1; 
+            if (maxRpmInChart < 1000) maxRpmInChart = 1000; 
+
+            int prevX = 0, prevY = 0;
+            for (int i = 0; i < turnCount; i++) {
+                int x = CHART_X_START + (i * (CHART_W / (turnCount - 1)));
+                int y = map(turnData[i], 0, maxRpmInChart, CHART_Y_START, CHART_Y_START - CHART_H);
+
+                // 🟢 橘色折線依然「每點都連」，確保轉速曲線是完整的
+                if (i > 0) {
+                    gfx->drawLine(prevX, prevY, x, y, GFX_ORANGE); 
+                }
+
+                // 🟢 【關鍵修改】：只有觸發 T1, T6, T12... 的點，才畫紅色圓點與印數字
+                if (i == 0 || (i + 1) % 6 == 0) {
+                    
+                    // 👉 把紅色圓點移到這裡！只有數字旁邊才會出現波波
+                    gfx->fillCircle(x, y, 3, GFX_RED);
+
+                    gfx->setTextColor(GFX_WHITE); gfx->setTextSize(1);
+                    
+                    // 1. 印出點位上方的轉速數字
+                    if (y < CHART_Y_START - CHART_H + 15) {
+                         gfx->setCursor(x - 12, y + 6); 
+                    } else {
+                         gfx->setCursor(x - 12, y - 12);
+                    }
+                    gfx->print(turnData[i]);
+
+                    // 2. 印出底部的 T 標籤
+                    gfx->setCursor(x - 10, CHART_Y_START + 6);
+                    gfx->printf("T%d", i + 1);
+                }
+                
+                prevX = x; prevY = y;
+            }
+            
+        } else if (turnCount == 0) {
+            // 👉 新增：開機時或還沒發射時，在圖表區顯示提示
+            gfx->setTextColor(GFX_DARKGREY); gfx->setTextSize(1);
+            gfx->setCursor(CHART_X_START + 30, CHART_Y_START - (CHART_H / 2));
+            gfx->print("Waiting for Launch...");
+        }
+
+        // 👉 最關鍵：畫完所有東西後，把藍牙狀態燈「補」回來！
+        updateStatus(currentBleState);
+    }
+
+    // 6. BLE_Manager 呼叫的接口
+    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount) {
+        drawDashboard(currentPeak, allTimePeak, history, histCount, Physics::SP, Physics::size);
+    }
+    // 👉 新增：讓主程式 loop 呼叫的檢查更新函式
+    void handleUpdate() {
+        if (readyToDraw) {
+            readyToDraw = false; // 立刻放下旗標
+            // 在這裡執行真正耗時的繪圖
+            showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount);
+        }
     }
 }
 // ==========================================
@@ -274,8 +352,8 @@ namespace BLE_Manager {
                     Serial.printf("🔥 最高: %.0f | 👑 生涯最高: %.0f\n", Physics::peak_rpm, Physics::allTimePeak);
                     Serial.println("=========================================\n");
                     
-                    // --- 修改：傳遞當前轉速、最高紀錄、歷史陣列給 UI ---
-                    UI::showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount); 
+                    // 🛑 移除原本的直接繪圖，改為舉起旗標，釋放藍牙執行緒！
+                    UI::readyToDraw = true; 
                 }
             }
         // ... (後面的 BLE 代碼不變)
@@ -339,9 +417,12 @@ void setup() {
 }
 
 void loop() {
-    // 主迴圈只負責維持藍牙連線狀態，所有動作交由 Notify 回調驅動
+    // 讓藍牙連線工作繼續執行
     BLE_Manager::connectTask();
-    delay(10); 
+    
+    // 👉 每一輪循環都檢查有沒有新的發射結果需要繪製
+    // 這樣繪圖就會在主執行緒進行，完全不會卡到藍牙接收！
+    UI::handleUpdate();
+
+    delay(10); // 微調留給系統的呼吸時間
 }
-
-
