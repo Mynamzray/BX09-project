@@ -1,25 +1,37 @@
-#include <Arduino_GFX_Library.h>
+// ==========================================
+// 1. LVGL 核心與驅動 (⚠️ 必須放在絕對頂部)
+// ==========================================
+#include <lvgl.h>
+#include "user_config.h"
+#include "lvgl_port.h"
+#include "lcd_bl_pwm_bsp.h"
+#include <Preferences.h> // 🟢 引入 ESP32 專用的記憶庫
+Preferences prefs;       // 宣告一個 Preferences 物件
+uint16_t global_all_time_best = 0; // 用來在程式中跑的歷史最高轉速
+// 🟢 新增：UI 專屬的斷電記憶歷史陣列 (最多存 8 筆)
+uint16_t global_history[8] = {0}; 
+int global_hist_count = 0;
+// ==========================================
+// 2. Arduino 與你的藍牙函式庫
+// ==========================================
+#include <Arduino.h>
 #include <BLEDevice.h>
 #include <BLEUtils.h>
+#include <BLEScan.h>
+#include <BLEAdvertisedDevice.h>
 
 // ==========================================
 // [模組 0] 全域硬體設定與常數
 // ==========================================
 #define BX09_MAC "da:c4:51:04:58:86"
-#define LCD_BL 14  // 螢幕背光引腳
-// Standard 16-bit Color Definitions
-#define BLACK    0x0000
-#define BLUE     0x001F
-#define RED      0xF800
-#define GREEN    0x07E0
-#define CYAN     0x07FF
-#define MAGENTA  0xF81F
-#define YELLOW   0xFFE0
-#define WHITE    0xFFFF
+// 這裡不需要原本的顏色定義了，因為 LVGL 有自己的調色盤 (lv_palette)
+
 // ==========================================
 // [模組 1] 物理運算器 (Physics Engine)
 // 負責處理原始數據、過濾雜訊與反比例運算
+// (⚠️ 完全保留你的原汁原味，沒有更動)
 // ==========================================
+
 namespace Physics {
     uint16_t rawProf[32] = {0};
     int count = 0;
@@ -31,41 +43,36 @@ namespace Physics {
     float history[8] = {0};    
     int historyCount = 0;      
 
-    // 👉 1. 將轉速陣列和圈數提升到這裡，讓 UI 可以讀取！
     uint16_t SP[32] = {0};
     uint16_t size = 0;
 
     void reset() {
         count = 0;
         memset(rawProf, 0, sizeof(rawProf));
-        memset(SP, 0, sizeof(SP)); // 👉 記得清空
-        size = 0;                  // 👉 記得清空
+        memset(SP, 0, sizeof(SP)); 
+        size = 0;                  
     }
 
     void addData(uint16_t val) {
-        if (val == 0) return; // 拒絕空包彈
+        if (val == 0) return; 
         if (count < 32) {
             rawProf[count++] = val;
         }
     }
 
-bool calculate() {
-    // ... 略 ...
-    uint16_t T[32] = {0};
-    uint16_t elapsedTime = 0;
+    bool calculate() {
+        uint16_t T[32] = {0};
+        uint16_t elapsedTime = 0;
 
-    // 🟢 不能有 uint16_t，要直接對全域變數清空：
-    memset(SP, 0, sizeof(SP));
-    size = 0;
+        memset(SP, 0, sizeof(SP));
+        size = 0;
 
         Serial.println("\n=================[ BX-09 RAW PROFILE DATA ]=================");
-        // 🟢 正確的重置語法：
-    memset(T, 0, sizeof(T)); // 陣列用 memset 函式清空
-    elapsedTime = 0;         // 單一變數直接 = 0 即可
+        memset(T, 0, sizeof(T)); 
+        elapsedTime = 0;         
 
-    // (下面這段重複清空 SP 的動作可以保留或刪除，建議留著最上面的就好)
-    memset(SP, 0, sizeof(SP));
-    size = 0;
+        memset(SP, 0, sizeof(SP));
+        size = 0;
 
         // 1. 基本解碼
         for (int i = 0; i < count; i += 1) { 
@@ -83,11 +90,7 @@ bool calculate() {
             size += 1;
         }
 
-
-        // -------------------------------------------------------------------------
-        // 2. 【防護 1：單點突波消除 (Glitch Filter)】
-        // -------------------------------------------------------------------------
-        // 如果轉速在 1 幀內瞬間飆升超過前後的 1.5 倍，判定為感測器讀取錯誤，將其削平
+        // 2. 單點突波消除
         for (int i = 1; i < size - 1; i++) {
             if (SP[i] > SP[i-1] * 1.5 && SP[i] > SP[i+1] * 1.5) {
                 uint16_t smoothed = (SP[i-1] + SP[i+1]) / 2;
@@ -96,38 +99,29 @@ bool calculate() {
             }
         }
 
-        // -------------------------------------------------------------------------
-        // 3. 【防護 2：尋找最高點與防回捲 (Peak Scan & Recoil Cutoff)】
-        // -------------------------------------------------------------------------
+        // 3. 尋找最高點與防回捲
         uint16_t trueMax = 0;
         int peakIndex = 0;
         String stopReason = "END_OF_DATA";
 
         for (int i = 0; i < size; i++) {
-            // 如果轉速跌落谷底 (<1000) 且已經過了前幾圈，代表拉線動作已結束，齒輪開始空轉或回捲
-            // 直接中斷掃描，拒絕後面的任何假高點
             if (SP[i] < 1000 && i >= 3) {
                 stopReason = "RECOIL_CUTOFF (Speed < 1000)";
                 break; 
             }
-            
             if (SP[i] > trueMax) {
                 trueMax = SP[i];
                 peakIndex = i;
             }
         }
 
-        // -------------------------------------------------------------------------
         // 4. 印出最終分析報告
-        // -------------------------------------------------------------------------
         Serial.println("\n--- [Step 2] Algorithm Decision Summary ---");
         Serial.printf("Stop Reason     : %s\n", stopReason.c_str());
         Serial.printf("Final True Peak : %d RPM (Found at Turn %d)\n", trueMax, peakIndex + 1);
         Serial.println("============================================================\n");
 
-        // -------------------------------------------------------------------------
         // 5. 儲存結果並釋放記憶體
-        // -------------------------------------------------------------------------
         if (trueMax > 0) {
             peak_rpm = trueMax;
             
@@ -148,215 +142,238 @@ bool calculate() {
 
         count = 0;
         memset(rawProf, 0, sizeof(rawProf));
-
         return true;
     }
 }
+
 // ==========================================
-// [模組2] UI 渲染器 - 修正版
+// [模組 2] LVGL 渲染器 (橫向超寬儀表板版)
 // ==========================================
+// 🟢 強行宣告 LVGL 內建字體，繞過 lv_conf.h 的捉迷藏
+// extern const lv_font_t lv_font_montserrat_24;
+// extern const lv_font_t lv_font_montserrat_14;
 namespace UI {
-    // 根據 Hello World 範例修正引腳：DC=7, CS=6, WR=8, RD=9
-    Arduino_DataBus *bus = new Arduino_HWSPI(11 /* DC */, 12 /* CS */, 10 /* SCK */, 13 /* MOSI */);
-
-    // 根據 Hello World 修正：RST=5, BL=15
-    // 注意：Waveshare 1.9" 通常需要開啟 IPS (true) 並且設置正確的 Offset
-    Arduino_GFX *gfx = new Arduino_ST7789(bus, 9 /* RST */,1 /*rotation*/,1/*IPS屏*/,170/*w*/,320/*h*/,35/*起始列偏移（左边）*/,0/*起始行偏移（上边）*/,35/*结束列偏移（右边）*/,0/*结束行偏移（下边）*/);
-
-
-   // 1. 獨立顏色定義 (RGB565)
-    #define GFX_BLACK     0x0000
-    #define GFX_WHITE     0xFFFF
-    #define GFX_GREEN     0x07E0
-    #define GFX_YELLOW    0xFFE0
-    #define GFX_CYAN      0x07FF
-    #define GFX_DARKGREY  0x4208
-    #define GFX_LIGHTGREY 0xC618
-    #define GFX_ORANGE    0xFD20
-    #define GFX_RED       0xF800
-
-    // 2. 螢幕佈局常數
-    const int SCREEN_W = 320;
-    const int SCREEN_H = 170;
-    const int LEFT_PANEL_W = 110;  
-    const int CHART_X_START = 125; 
-    const int CHART_Y_START = 145; 
-    const int CHART_W = 180;       
-    const int CHART_H = 120;       
-
-    // 👉 新增：記憶目前的藍牙狀態
-    bool currentBleState = false; 
     volatile bool readyToDraw = false;
-    // 提前宣告，讓 init() 可以認識它
-    void updateStatus(bool isConnected);
-    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount);
 
-    // 3. 唯一的初始化功能
-    void init() {
-        if (gfx) {
-            gfx->begin();
-            gfx->setRotation(1); 
-            gfx->fillScreen(GFX_BLACK);
-        }
-        // 👉 開機馬上畫出「初始狀態」的儀表板 (讀取 Physics 的預設 0 值)
-        showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount);
+    // LVGL 物件指標
+    lv_obj_t * label_status;
+    lv_obj_t * led_status;
+    lv_obj_t * label_current_rpm;
+    lv_obj_t * label_all_time_rpm;
+    lv_obj_t * label_history;
+    lv_obj_t * chart;
+    lv_chart_series_t * chart_series;
+
+    // 1. 初始化介面
+void init() {
+        lvgl_port_init();
+        lcd_bl_pwm_bsp_init(LCD_PWM_MODE_255);
+
+        lv_obj_t * scr = lv_scr_act();
         
-        // 預設為未連線 (亮紅燈)
-        updateStatus(false);
+        // 🎨 1. 絕對純黑主題
+        lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
+        lv_obj_set_style_text_color(scr, lv_color_white(), LV_PART_MAIN);
+
+        // 📊 2. 左欄：實時數據區 (X 座標 30)
+        led_status = lv_led_create(scr);
+        lv_obj_align(led_status, LV_ALIGN_TOP_LEFT, 30, 30);
+        lv_obj_set_size(led_status, 15, 15);
+        lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
+        lv_led_on(led_status);
+
+        label_status = lv_label_create(scr);
+        lv_label_set_text(label_status, "BLE DISCONNECTED");
+        lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 55, 28);
+        lv_obj_set_style_text_color(label_status, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_font(label_status, &lv_font_montserrat_24, 0);
+
+        // 實時轉速
+        lv_obj_t * lbl_cur_title = lv_label_create(scr);
+        lv_label_set_text(lbl_cur_title, "CURRENT RPM");
+        lv_obj_align(lbl_cur_title, LV_ALIGN_TOP_LEFT, 30, 80);
+        lv_obj_set_style_text_color(lbl_cur_title, lv_palette_main(LV_PALETTE_RED), 0);
+        lv_obj_set_style_text_font(lbl_cur_title, &lv_font_montserrat_24, 0);
+
+        label_current_rpm = lv_label_create(scr);
+        lv_label_set_text(label_current_rpm, "0");
+        lv_obj_align(label_current_rpm, LV_ALIGN_TOP_LEFT, 30, 110);
+        // 🟢 直接套用穩定的 24 號字體，拔除所有 zoom 相關設定！
+        lv_obj_set_style_text_font(label_current_rpm, &lv_font_montserrat_48, 0); 
+
+        // 歷史最高
+        lv_obj_t * lbl_best_title = lv_label_create(scr);
+        lv_label_set_text(lbl_best_title, "ALL-TIME BEST");
+        lv_obj_align(lbl_best_title, LV_ALIGN_TOP_LEFT, 30, 200);
+        lv_obj_set_style_text_color(lbl_best_title, lv_palette_main(LV_PALETTE_AMBER), 0);
+        lv_obj_set_style_text_font(lbl_best_title, &lv_font_montserrat_24, 0);
+
+        label_all_time_rpm = lv_label_create(scr);
+        // 🟢 【新增】開機時，打開名為 "bx09_store" 的空間（true 代表唯讀模式）
+        prefs.begin("bx09_store", true);
+        // 讀取名為 "best_rpm" 的數字，如果裡面從來沒存過東西，預設值給 0
+        global_all_time_best = prefs.getUInt("best_rpm", 0); 
+        global_hist_count = prefs.getInt("hist_cnt", 0);
+        if (global_hist_count > 0) {
+            prefs.getBytes("hist_arr", global_history, sizeof(global_history));
+        }
+        prefs.end(); // 關閉空間
+        lv_label_set_text_fmt(label_all_time_rpm, "%d RPM", global_all_time_best);
+        lv_obj_align(label_all_time_rpm, LV_ALIGN_TOP_LEFT, 30, 230);
+        // 🟢 拔除 zoom，套用 24 號字體
+        lv_obj_set_style_text_font(label_all_time_rpm, &lv_font_montserrat_36, 0);
+
+        // 📝 3. 中欄：歷史紀錄區 (X 座標 350)
+        lv_obj_t * lbl_hist_title = lv_label_create(scr);
+        lv_label_set_text(lbl_hist_title, "Recent History");
+        lv_obj_align(lbl_hist_title, LV_ALIGN_TOP_LEFT, 350, 30);
+        lv_obj_set_style_text_color(lbl_hist_title, lv_palette_main(LV_PALETTE_CYAN), 0);
+        lv_obj_set_style_text_font(lbl_hist_title, &lv_font_montserrat_24, 0);
+
+        label_history = lv_label_create(scr);
+        String histText = "";
+        for (int i = 0; i < global_hist_count; i++) {
+            histText += String(i + 1) + ". " + String(global_history[i]) + " RPM\n";
+        }
+        // 如果完全沒紀錄，給予預設介面
+        if (global_hist_count == 0) {
+            histText = "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -\n8. -";
+        }
+        lv_label_set_text(label_history, "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -");
+        lv_obj_align(label_history, LV_ALIGN_TOP_LEFT, 350, 65);
+        lv_obj_set_style_text_line_space(label_history, 8, 0);
+        // 🟢 拔除 zoom，套用 24 號字體
+        lv_obj_set_style_text_font(label_history, &lv_font_montserrat_24, 0);
+
+        // 📈 4. 右欄：圖表 (X 座標 550)
+        chart = lv_chart_create(scr);
+        lv_obj_set_size(chart, 250, 240); 
+        lv_obj_align(chart, LV_ALIGN_TOP_LEFT, 550, 40);
+        
+        lv_obj_set_style_bg_opa(chart, 0, LV_PART_MAIN);     
+        lv_obj_set_style_border_color(chart, lv_color_hex(0x333333), LV_PART_MAIN); 
+        
+        lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+        chart_series = lv_chart_add_series(chart, lv_color_hex(0xFF0000), LV_CHART_AXIS_PRIMARY_Y);
+        lv_obj_set_style_line_width(chart, 3, LV_PART_ITEMS);
+        lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
+        lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
     }
 
-    // 4. 藍牙狀態燈
+    // 2. 更新藍牙狀態燈
     void updateStatus(bool isConnected) {
-        currentBleState = isConnected; // 記住狀態
-        if (!gfx) return;
-        gfx->fillCircle(310, 10, 4, isConnected ? GFX_GREEN : GFX_RED);
+        if (isConnected) {
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN));
+            lv_label_set_text(label_status, "BEYBLADE READY");
+        } else {
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
+            lv_label_set_text(label_status, "BLE DISCONNECTED");
+        }
     }
 
-    // 5. 核心折線圖與看板繪製邏輯
-    void drawDashboard(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount, uint16_t turnData[], int turnCount) {
-        if (!gfx) return;
+// 3. 繪製結果
+    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount, uint16_t turnData[], int turnCount) {
         
-        gfx->fillScreen(GFX_BLACK);
-
-        // ==========================================
-        // 左邊面板：數據區
-        // ==========================================
-        gfx->drawLine(LEFT_PANEL_W, 0, LEFT_PANEL_W, SCREEN_H, GFX_DARKGREY); 
-
-        gfx->setTextColor(GFX_GREEN); gfx->setTextSize(1);
-        gfx->setCursor(5, 5); gfx->print("Current RPM");
-        gfx->setTextColor(GFX_WHITE); gfx->setTextSize(2); 
-        gfx->setCursor(5, 18); gfx->print(currentPeak);
-
-        gfx->setTextColor(GFX_YELLOW); gfx->setTextSize(1);
-        gfx->setCursor(5, 42); gfx->print("All-Time Best");
-        gfx->setTextColor(GFX_WHITE); gfx->setTextSize(2);
-        gfx->setCursor(5, 55); gfx->print(allTimePeak);
-
-        gfx->setTextColor(GFX_CYAN); gfx->setTextSize(1);
-        gfx->setCursor(5, 82); gfx->print("Recent Hist.");
+        bool needSaveBest = false;
         
-        gfx->setTextColor(GFX_LIGHTGREY); gfx->setTextSize(1); 
-        int histToShow = (histCount > 5) ? 5 : histCount;
-        for (int i = 0; i < histToShow; i++) {
-            gfx->setCursor(5, 98 + (i * 14));
-            gfx->print(i + 1); gfx->print(". "); gfx->print((int)history[i]);
+        // 1. 檢查並更新歷史最高紀錄
+        if (allTimePeak > global_all_time_best) {
+            global_all_time_best = allTimePeak;
+            needSaveBest = true;
         }
 
-// ==========================================
-        // 右邊面板：轉速折線圖
-        // ==========================================
-        gfx->drawLine(CHART_X_START, CHART_Y_START, CHART_X_START + CHART_W, CHART_Y_START, GFX_WHITE); 
-        gfx->drawLine(CHART_X_START, CHART_Y_START, CHART_X_START, CHART_Y_START - CHART_H, GFX_WHITE); 
+        // 2. 🟢 處理最新歷史紀錄：將陣列資料全部往後推一格，騰出第 0 格
+        for (int i = 7; i > 0; i--) {
+            global_history[i] = global_history[i - 1];
+        }
+        // 把最新的一次發射塞到最前面
+        global_history[0] = currentPeak; 
+        
+        if (global_hist_count < 8) {
+            global_hist_count++;
+        }
 
-        if (turnCount >= 2) { 
+        // 3. 🟢 將新資料寫入 ESP32 的 Flash 硬碟中
+        prefs.begin("bx09_store", false); // 讀寫模式
+        if (needSaveBest) {
+            prefs.putUInt("best_rpm", global_all_time_best);
+        }
+        prefs.putInt("hist_cnt", global_hist_count); // 存數量
+        prefs.putBytes("hist_arr", global_history, sizeof(global_history)); // 存陣列
+        prefs.end();
+
+        // 4. 更新左側 UI
+        lv_label_set_text_fmt(label_current_rpm, "%d RPM", currentPeak);
+        lv_label_set_text_fmt(label_all_time_rpm, "%d RPM", global_all_time_best);
+
+        // 5. 更新中間歷史紀錄 UI
+        String histText = "";
+        for (int i = 0; i < global_hist_count; i++) {
+            histText += String(i + 1) + ". " + String(global_history[i]) + " RPM\n";
+        }
+        lv_label_set_text(label_history, histText.c_str());
+
+        // 6. 更新右側圖表 (維持原樣)
+        if (turnCount > 0) {
             uint16_t maxRpmInChart = 0;
             for (int i = 0; i < turnCount; i++) {
                 if (turnData[i] > maxRpmInChart) maxRpmInChart = turnData[i];
             }
-            maxRpmInChart = maxRpmInChart * 1.1; 
-            if (maxRpmInChart < 1000) maxRpmInChart = 1000; 
+            maxRpmInChart = maxRpmInChart * 1.15;
+            if (maxRpmInChart < 1000) maxRpmInChart = 1000;
 
-            int prevX = 0, prevY = 0;
-            for (int i = 0; i < turnCount; i++) {
-                int x = CHART_X_START + (i * (CHART_W / (turnCount - 1)));
-                int y = map(turnData[i], 0, maxRpmInChart, CHART_Y_START, CHART_Y_START - CHART_H);
-
-                // 🟢 橘色折線依然「每點都連」，確保轉速曲線是完整的
-                if (i > 0) {
-                    gfx->drawLine(prevX, prevY, x, y, GFX_ORANGE); 
-                }
-
-                // 🟢 【關鍵修改】：只有觸發 T1, T6, T12... 的點，才畫紅色圓點與印數字
-                if (i == 0 || (i + 1) % 6 == 0) {
-                    
-                    // 👉 把紅色圓點移到這裡！只有數字旁邊才會出現波波
-                    gfx->fillCircle(x, y, 3, GFX_RED);
-
-                    gfx->setTextColor(GFX_WHITE); gfx->setTextSize(1);
-                    
-                    // 1. 印出點位上方的轉速數字
-                    if (y < CHART_Y_START - CHART_H + 15) {
-                         gfx->setCursor(x - 12, y + 6); 
-                    } else {
-                         gfx->setCursor(x - 12, y - 12);
-                    }
-                    gfx->print(turnData[i]);
-
-                    // 2. 印出底部的 T 標籤
-                    gfx->setCursor(x - 10, CHART_Y_START + 6);
-                    gfx->printf("T%d", i + 1);
-                }
-                
-                prevX = x; prevY = y;
-            }
+            lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, maxRpmInChart);
+            lv_chart_set_point_count(chart, turnCount);
             
-        } else if (turnCount == 0) {
-            // 👉 新增：開機時或還沒發射時，在圖表區顯示提示
-            gfx->setTextColor(GFX_DARKGREY); gfx->setTextSize(1);
-            gfx->setCursor(CHART_X_START + 30, CHART_Y_START - (CHART_H / 2));
-            gfx->print("Waiting for Launch...");
+            for (int i = 0; i < turnCount; i++) {
+                lv_chart_set_value_by_id(chart, chart_series, i, turnData[i]);
+            }
+            lv_chart_refresh(chart);
         }
-
-        // 👉 最關鍵：畫完所有東西後，把藍牙狀態燈「補」回來！
-        updateStatus(currentBleState);
     }
 
-    // 6. BLE_Manager 呼叫的接口
-    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount) {
-        drawDashboard(currentPeak, allTimePeak, history, histCount, Physics::SP, Physics::size);
-    }
-    // 👉 新增：讓主程式 loop 呼叫的檢查更新函式
+    // 4. 安全檢查
     void handleUpdate() {
         if (readyToDraw) {
-            readyToDraw = false; // 立刻放下旗標
-            // 在這裡執行真正耗時的繪圖
-            showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount);
+            readyToDraw = false; 
+            showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount, Physics::SP, Physics::size);
         }
     }
 }
 // ==========================================
 // [模組 3] BLE 監聽器 (BLE Manager)
-// 負責連線、斷線重連、以及接收 Notify 數據
 // ==========================================
 namespace BLE_Manager {
     BLEClient* client = nullptr;
     bool isConnected = false;
 
-    // 藍牙接收回調函數
     static void notifyCallback(BLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
         if (length == 0) return;
         uint8_t header = pData[0];
 
-        // 狀態判斷
         if (header == 0xA0) {
             if (length >= 4 && pData[3] == 0x04) {
                 Serial.println("\n[狀態] 🟢 陀螺已安裝");
-                Physics::reset();  // 呼叫物理模組重置數據
-                UI::updateStatus(true);  // 點亮綠燈  // 呼叫 UI 模組更新畫面
+                Physics::reset();  
+                UI::updateStatus(true);  
             } 
         }
-        // 威力曲線數據接收
         else if (header >= 0x71 && header <= 0x73) {
             for (int i = 1; i < (int)length - 1; i += 2) {
                 uint16_t val = pData[i] | (pData[i+1] << 8);
-                Physics::addData(val); // 交給物理模組處理
+                Physics::addData(val); 
             }
 
-            // 結算封包
-            // ... (前面的 BLE 代碼不變)
-            // 結算封包
             if (header == 0x73) {
                 if (Physics::calculate()) { 
                     Serial.println("\n=========================================");
                     Serial.printf("🔥 最高: %.0f | 👑 生涯最高: %.0f\n", Physics::peak_rpm, Physics::allTimePeak);
                     Serial.println("=========================================\n");
                     
-                    // 🛑 移除原本的直接繪圖，改為舉起旗標，釋放藍牙執行緒！
+                    // 舉起旗標，讓 LVGL 在 Loop 裡面安全繪圖！
                     UI::readyToDraw = true; 
                 }
             }
-        // ... (後面的 BLE 代碼不變)
         }
     }
 
@@ -364,6 +381,7 @@ namespace BLE_Manager {
         void onDisconnect(BLEClient* pclient) {
             isConnected = false;
             Serial.println("!!! BX-09 斷開連線 ...");
+            // 注意：這裡不能直接呼叫 LVGL UI，必須留給 Loop 去處理狀態燈
         }
     };
 
@@ -395,7 +413,7 @@ namespace BLE_Manager {
                 Serial.println(">>> 準備就緒！請安裝陀螺 <<<");
                 UI::updateStatus(true);
             } else {
-                delay(3000); // 失敗則等待 3 秒再試
+                delay(3000); 
             }
         }
     }
@@ -406,23 +424,23 @@ namespace BLE_Manager {
 // ==========================================
 void setup() {
     Serial.begin(115200);
-    unsigned long start = millis();
-    while (!Serial && millis() - start < 3000); 
+    // 讓 Serial Monitor 有時間連上
+    delay(2000); 
 
-    Serial.println(">>> BX-09 OS 啟動 <<<");
+    Serial.println(">>> BX-09 OS (LVGL Version) 啟動 <<<");
 
-    // 初始化各個模組
     UI::init();
     BLE_Manager::init();
 }
 
 void loop() {
-    // 讓藍牙連線工作繼續執行
+    // 1. 維持藍牙連線
     BLE_Manager::connectTask();
     
-    // 👉 每一輪循環都檢查有沒有新的發射結果需要繪製
-    // 這樣繪圖就會在主執行緒進行，完全不會卡到藍牙接收！
+    // 2. 檢查是否有新封包需要更新畫面
     UI::handleUpdate();
 
-    delay(10); // 微調留給系統的呼吸時間
-}
+    // 3. LVGL 心跳包 (絕對不能刪掉！)
+    lv_timer_handler(); 
+    delay(5); 
+} 
