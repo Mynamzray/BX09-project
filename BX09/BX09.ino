@@ -74,7 +74,9 @@ namespace Physics {
         memset(SP, 0, sizeof(SP));
         size = 0;
 
+        // ==========================================
         // 1. 基本解碼
+        // ==========================================
         for (int i = 0; i < count; i += 1) { 
             auto nRefs = rawProf[i];
             if (nRefs == 0) continue; 
@@ -82,24 +84,46 @@ namespace Physics {
             auto dt = static_cast<double>(nRefs) / 125.0;
             auto sp = static_cast<uint16_t>(60000.0 / dt);
 
-            if (sp > 20000) continue;
-
+            // 🟢 【重要修正】：拔除直接 continue 的機制，把極端值保留在陣列原位，
+            // 這樣前輩的「線性補差法」才能正確抓到前後時間點的數值！
             elapsedTime += static_cast<uint16_t>(dt);
             T[size] = elapsedTime;
             SP[size] = sp;
             size += 1;
         }
 
-        // 2. 單點突波消除
-        for (int i = 1; i < size - 1; i++) {
-            if (SP[i] > SP[i-1] * 1.5 && SP[i] > SP[i+1] * 1.5) {
-                uint16_t smoothed = (SP[i-1] + SP[i+1]) / 2;
-                Serial.printf("⚠️ [Glitch Filter] Turn %02d Spike (%d RPM) smoothed to %d RPM.\n", i + 1, SP[i], smoothed);
-                SP[i] = smoothed;
+        // ==========================================
+        // 2. 前輩的實戰演算法 (Sempai's Filter)
+        // ==========================================
+        // 步驟 2-1: 單點高於 25000 RPM 直接丟棄 (標記為 0，稍後補差)
+        for (int i = 0; i < size; i++) {
+            if (SP[i] > 25000) {
+                SP[i] = 0; 
+                Serial.printf("⚠️ 觸發前輩規則 1: 點 %d 測得異常超高轉速，準備進行線性補差\n", i);
             }
         }
 
-        // 3. 尋找最高點與防回捲
+        // 步驟 2-2: 前後超過 5000 RPM，用「線性補差法」取代
+        for (int pass = 0; pass < 2; pass++) { 
+            for (int i = 1; i < size - 1; i++) {
+                if (SP[i] == 0 || abs(SP[i] - SP[i-1]) > 5000 || abs(SP[i] - SP[i+1]) > 5000) {
+                    uint16_t interpolated = (SP[i-1] + SP[i+1]) / 2;
+                    if (interpolated > 0 && interpolated < 25000) {
+                        SP[i] = interpolated;
+                    }
+                }
+            }
+        }
+
+        // 步驟 2-3: 邊界防護 
+        if (size > 1) {
+            if (abs(SP[0] - SP[1]) > 5000) SP[0] = SP[1];
+            if (abs(SP[size-1] - SP[size-2]) > 5000) SP[size-1] = SP[size-2];
+        }
+
+        // ==========================================
+        // 3. 清除突波後，尋找峰值與下降曲線
+        // ==========================================
         uint16_t trueMax = 0;
         int peakIndex = 0;
         String stopReason = "END_OF_DATA";
@@ -115,26 +139,27 @@ namespace Physics {
             }
         }
 
+        // ==========================================
         // 4. 印出最終分析報告
+        // ==========================================
         Serial.println("\n--- [Step 2] Algorithm Decision Summary ---");
         Serial.printf("Stop Reason     : %s\n", stopReason.c_str());
         Serial.printf("Final True Peak : %d RPM (Found at Turn %d)\n", trueMax, peakIndex + 1);
         Serial.println("============================================================\n");
 
+        // ==========================================
         // 5. 儲存結果並釋放記憶體
+        // ==========================================
         if (trueMax > 0) {
             peak_rpm = trueMax;
-            
             float sum_sp = 0;
             for (int i = 0; i < size; i++) sum_sp += SP[i];
             avg_rpm = size > 0 ? (sum_sp / size) : 0;
-
             for (int i = 7; i > 0; i--) {
                 history[i] = history[i-1];
             }
             history[0] = peak_rpm; 
             if (historyCount < 8) historyCount++;
-
             if (peak_rpm > allTimePeak) {
                 allTimePeak = peak_rpm;
             }
@@ -145,7 +170,6 @@ namespace Physics {
         return true;
     }
 }
-
 // ==========================================
 // [模組 2] LVGL 渲染器 (橫向超寬儀表板版)
 // ==========================================
@@ -156,6 +180,7 @@ namespace UI {
     volatile bool readyToDraw = false;
 
     // LVGL 物件指標
+    lv_obj_t * scr;
     lv_obj_t * label_status;
     lv_obj_t * led_status;
     lv_obj_t * label_current_rpm;
@@ -239,10 +264,12 @@ void init() {
         if (global_hist_count == 0) {
             histText = "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -\n8. -";
         }
-        lv_label_set_text(label_history, "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -");
+
+        // 🟢 正確修改：把組裝好的 histText 變數印出來！
+        lv_label_set_text(label_history, histText.c_str()); 
+        
         lv_obj_align(label_history, LV_ALIGN_TOP_LEFT, 350, 65);
         lv_obj_set_style_text_line_space(label_history, 8, 0);
-        // 🟢 拔除 zoom，套用 24 號字體
         lv_obj_set_style_text_font(label_history, &lv_font_montserrat_24, 0);
 
         // 📈 4. 右欄：圖表 (X 座標 550)

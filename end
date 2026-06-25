@@ -1,0 +1,30 @@
+[33mcommit 7c70d83eaaa0e048c3158dd1d1f625eaed641297[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;32mexperiment-new-algorithm[m[33m)[m
+Author: Mynamzray <110881715+Mynamzray@users.noreply.github.com>
+Date:   Tue May 19 17:38:18 2026 +0800
+
+    Refactor: Implement robust noise filtering and anti-glitch logic for BX-09 Physics module
+
+[33mcommit 7a6227514bc82ac2ca8c0e9fbd1ac5068f77ced5[m
+Author: Mynamzray <y71362830@gmail.com>
+Date:   Mon May 18 20:53:17 2026 +0800
+
+    added record hight and recent 8 shots
+
+[33mcommit 4c5114757c672acf27887de3fffa4f502465c05d[m
+Merge: 68f897a dc20aa7
+Author: Mynamzray <110881715+Mynamzray@users.noreply.github.com>
+Date:   Mon May 18 11:22:08 2026 +0800
+
+    完成 BX-09 基礎模組化與電量偵測
+
+[33mcommit dc20aa729667546ed6aa57129e772f549cfead85[m
+Author: Mynamzray <110881715+Mynamzray@users.noreply.github.com>
+Date:   Mon May 18 11:15:05 2026 +0800
+
+    Initial commit
+
+[33mcommit 68f897a0d29e3fddbf7d0afb4eb0dd49f9d13238[m
+Author: Mynamzray <110881715+Mynamzray@users.noreply.github.com>
+Date:   Mon May 18 11:13:48 2026 +0800
+
+    完成 BX-09 基礎模組化與電量偵測
