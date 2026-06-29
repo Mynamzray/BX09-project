@@ -286,18 +286,19 @@ void init() {
         lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
         lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
     }
-
-    // 2. 更新藍牙狀態燈
-    void updateStatus(bool isConnected) {
-        if (isConnected) {
-            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN));
-            lv_label_set_text(label_status, "BEYBLADE READY");
-        } else {
+// 2. 更新藍牙狀態燈 (三段變速版)
+    void updateStatus(int state) {
+        if (state == 0) {
             lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
             lv_label_set_text(label_status, "BLE DISCONNECTED");
+        } else if (state == 1) {
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_AMBER)); // 🟡 黃燈
+            lv_label_set_text(label_status, "WAITING FOR BEY");
+        } else if (state == 2) {
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN)); // 🟢 綠燈
+            lv_label_set_text(label_status, "BEYBLADE READY");
         }
     }
-
 // 3. 繪製結果
     void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount, uint16_t turnData[], int turnCount) {
         
@@ -367,13 +368,27 @@ void init() {
         }
     }
 }
+
 // ==========================================
-// [模組 3] BLE 監聽器 (BLE Manager)
+// [模組 3] BLE 監聽器 (防崩潰與三段燈號最終版)
 // ==========================================
 namespace BLE_Manager {
     BLEClient* client = nullptr;
-    bool isConnected = false;
+    BLEScan* pBLEScan = nullptr;
+    BLEAddress* targetAddress = nullptr; 
+    // 🟢 加上 volatile 關鍵字，防止雙核心快取不同步
+    volatile bool isConnected = false;
+    volatile bool isBeyInstalled = false;
+    //bool isConnected = false;
+    bool doConnect = false;
+    bool isScanning = false; 
 
+    // 分離 UI 狀態與陀螺狀態
+    //bool isBeyInstalled = false;
+    int current_ui_state = 0;
+    int last_ui_state = -1;
+
+    // 接收數據 (絕對禁止在這裡直接呼叫 UI 繪圖！)
     static void notifyCallback(BLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
         if (length == 0) return;
         uint8_t header = pData[0];
@@ -382,7 +397,7 @@ namespace BLE_Manager {
             if (length >= 4 && pData[3] == 0x04) {
                 Serial.println("\n[狀態] 🟢 陀螺已安裝");
                 Physics::reset();  
-                UI::updateStatus(true);  
+                isBeyInstalled = true; // 只寫紙條，不碰方向盤
             } 
         }
         else if (header >= 0x71 && header <= 0x73) {
@@ -396,9 +411,7 @@ namespace BLE_Manager {
                     Serial.println("\n=========================================");
                     Serial.printf("🔥 最高: %.0f | 👑 生涯最高: %.0f\n", Physics::peak_rpm, Physics::allTimePeak);
                     Serial.println("=========================================\n");
-                    
-                    // 舉起旗標，讓 LVGL 在 Loop 裡面安全繪圖！
-                    UI::readyToDraw = true; 
+                    UI::readyToDraw = true; // 寫紙條，由 Loop 處理繪圖
                 }
             }
         }
@@ -407,26 +420,81 @@ namespace BLE_Manager {
     class ClientCallback : public BLEClientCallbacks {
         void onDisconnect(BLEClient* pclient) {
             isConnected = false;
+            isBeyInstalled = false; // 斷線時，連帶把陀螺狀態歸零
             Serial.println("!!! BX-09 斷開連線 ...");
-            // 注意：這裡不能直接呼叫 LVGL UI，必須留給 Loop 去處理狀態燈
+        }
+    };
+
+    class AdvertisedDeviceCallbacks: public BLEAdvertisedDeviceCallbacks {
+        void onResult(BLEAdvertisedDevice advertisedDevice) {
+            if (advertisedDevice.haveServiceUUID()) {
+                String deviceUUID = advertisedDevice.getServiceUUID().toString().c_str();
+                deviceUUID.toLowerCase();
+
+                if (deviceUUID.indexOf("5c40000-f8eb-11ec-b939-0242ac120002") >= 0) {
+                    Serial.println("\n✅ 發現 BX-09！鎖定目標，準備連線...");
+                    BLEDevice::getScan()->stop();
+                    isScanning = false;
+                    
+                    if (targetAddress != nullptr) delete targetAddress;
+                    targetAddress = new BLEAddress(advertisedDevice.getAddress());
+                    doConnect = true; 
+                }
+            }
         }
     };
 
     void init() {
         BLEDevice::init("ESP32_BEY_SNIFFER");
+        pBLEScan = BLEDevice::getScan();
+        pBLEScan->setAdvertisedDeviceCallbacks(new AdvertisedDeviceCallbacks());
+        pBLEScan->setActiveScan(true); 
+        pBLEScan->setInterval(100);
+        pBLEScan->setWindow(99); 
     }
-
-    void connectTask() {
+void connectTask() {
+        // 🟢 1. 優先處理狀態機與 UI 同步 (搬到最上面！)
         if (!isConnected) {
-            UI::updateStatus(false);
-            if (client != nullptr) delete client;
+            current_ui_state = 0; // 🔴 紅燈：斷線
+        } else if (isConnected && !isBeyInstalled) {
+            current_ui_state = 1; // 🟡 黃燈：已連線，等待安裝陀螺
+        } else if (isConnected && isBeyInstalled) {
+            current_ui_state = 2; // 🟢 綠燈：陀螺已安裝，準備就緒
+        }
+
+        // 如果狀態有改變，才去通知 LVGL 換燈號與文字
+        if (current_ui_state != last_ui_state) {
+            last_ui_state = current_ui_state;
+            UI::updateStatus(current_ui_state); 
+            
+            // 🛑 核心防呆：強制螢幕立刻刷新！
+            // (因為等一下雷達掃描會讓主迴圈暫停，必須在暫停前把紅燈畫出來)
+            lv_timer_handler(); 
+        }
+
+        // 🟢 2. 斷線後安全重啟雷達機制 (黑洞區塊)
+        if (!isConnected && !doConnect && !isScanning) {
+            isScanning = true;
+            Serial.println(">>> 啟動雷達！開始搜尋... <<<");
+            pBLEScan->clearResults(); 
+            // 這裡會進入「阻塞掃描模式」，直到掃到裝置才會解除暫停
+            pBLEScan->start(0, false); 
+        }
+
+        // 🟢 3. 連線機制
+        if (doConnect) {
+            doConnect = false;
+            if (client != nullptr) {
+                delete client;
+            }
             
             client = BLEDevice::createClient();
             client->setClientCallbacks(new ClientCallback());
-
-            if (client->connect(BLEAddress(BX09_MAC))) {
+            Serial.println(">>> 嘗試與目標裝置建立連線... <<<");
+            
+            if (client->connect(*targetAddress)) {
                 isConnected = true;
-                Serial.println(">>> 藍牙連線成功！掛載監聽器... <<<");
+                Serial.println(">>> 藍牙連線成功！掛載資料監聽器... <<<");
 
                 std::map<std::string, BLERemoteService*>* services = client->getServices();
                 for (auto const& sPair : *services) {
@@ -437,15 +505,15 @@ namespace BLE_Manager {
                         }
                     }
                 }
-                Serial.println(">>> 準備就緒！請安裝陀螺 <<<");
-                UI::updateStatus(true);
+                Serial.println(">>> 系統準備就緒！等待安裝陀螺 <<<");
             } else {
-                delay(3000); 
+                Serial.println("❌ 連線失敗");
+                // 順手補上這行，連線失敗時讓下一個迴圈能重新掃描
+                isScanning = false;
             }
         }
     }
 }
-
 // ==========================================
 // 主程式入口 (Main Setup & Loop)
 // ==========================================
