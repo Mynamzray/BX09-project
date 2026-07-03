@@ -38,33 +38,81 @@ namespace UI {
     lv_obj_t * label_battery; // 🟢 新增：電池文字與圖示物件
     lv_chart_series_t * chart_series;
 
+// 🟢 記錄目前畫面上顯示的數字，作為下次動畫的起點
+    static int current_displayed_rpm = 0;
+
+    // 🟢 動畫引擎專用的回呼函式：LVGL 每畫一格都會呼叫這裡，傳入計算好的漸變數字 (v)
+    static void anim_text_update_cb(void * var, int32_t v) {
+        lv_obj_t * label = (lv_obj_t *)var;
+        // 把漸變中的數字格式化並顯示出來
+        lv_label_set_text_fmt(label, "%d RPM", v); 
+    }
+
 // 🟢 新增：更新電池圖示與百分比
-    void updateBattery(int percentage) {
+ // 🟢 修正版：更新電池圖示與百分比 (支援充電狀態)
+    void updateBattery(int percentage, bool isCharging) {
         if (!label_battery) return;
 
         const char* symbol;
-        if (percentage >= 80) {
-            symbol = LV_SYMBOL_BATTERY_FULL;   // 滿格
-        } else if (percentage >= 60) {
-            symbol = LV_SYMBOL_BATTERY_3;      // 剩 3 格 (75%)
-        } else if (percentage >= 40) {
-            symbol = LV_SYMBOL_BATTERY_2;      // 剩 2 格 (50%)
-        } else if (percentage >= 20) {
-            symbol = LV_SYMBOL_BATTERY_1;      // 剩 1 格 (25%)
-        } else {
-            symbol = LV_SYMBOL_BATTERY_EMPTY;  // 空血
-        }
         
-        // 組合圖示與數字
-        lv_label_set_text_fmt(label_battery, "%s %d%%", symbol, percentage);
-        
-        // 低電量時自動變紅警告
-        if (percentage <= 20) {
-            lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_RED), 0);
+        if (isCharging) {
+            symbol = LV_SYMBOL_CHARGE; // ⚡ 顯示 LVGL 內建閃電符號
+            lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_GREEN), 0); // 充電時變綠色
         } else {
-            lv_obj_set_style_text_color(label_battery, lv_color_white(), 0);
+            if (percentage >= 80) {
+                symbol = LV_SYMBOL_BATTERY_FULL;
+            } else if (percentage >= 60) {
+                symbol = LV_SYMBOL_BATTERY_3;
+            } else if (percentage >= 40) {
+                symbol = LV_SYMBOL_BATTERY_2;
+            } else if (percentage >= 20) {
+                symbol = LV_SYMBOL_BATTERY_1;
+            } else {
+                symbol = LV_SYMBOL_BATTERY_EMPTY;
+            }
+            
+            // 低電量警告
+            if (percentage <= 20) {
+                lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_RED), 0);
+            } else {
+                lv_obj_set_style_text_color(label_battery, lv_color_white(), 0);
+            }
         }
     }
+// 🟢 假設這是你用來更新轉速的函式，請把 label_current_rpm 換成你實際的標籤變數名稱
+    void updateCurrentRPM(int target_rpm) {
+        if (!label_current_rpm) return;
+
+        // 如果轉速沒變，就不需要播動畫
+        if (current_displayed_rpm == target_rpm) return;
+
+        // 建立並設定 LVGL 動畫物件
+        lv_anim_t a;
+        lv_anim_init(&a);
+        
+        // 1. 指定要操作的物件 (你的數字標籤)
+        lv_anim_set_var(&a, label_current_rpm);
+        
+        // 2. 設定起點與終點 (從目前的數字，滾動到新的目標轉速)
+        // 如果想要每次都從 0 開始滾，可以把 current_displayed_rpm 改成 0
+        lv_anim_set_values(&a, current_displayed_rpm, target_rpm);
+        
+        // 3. 設定動畫持續時間：500 毫秒 (0.5秒)
+        lv_anim_set_time(&a, 500);
+        
+        // 4. 設定動畫曲線：Ease-out (先快後慢，非常有跑車儀表板的感覺)
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        
+        // 5. 指定執行動畫的回呼函式
+        lv_anim_set_exec_cb(&a, anim_text_update_cb);
+        
+        // 6. 啟動動畫！
+        lv_anim_start(&a);
+
+        // 更新歷史紀錄，讓下一次動畫知道要從哪裡開始
+        current_displayed_rpm = target_rpm;
+    }    
+
     // 1. 初始化介面
 void init() {
         lvgl_port_init();
@@ -216,9 +264,11 @@ void init() {
         prefs.end();
 
         // 4. 更新左側 UI
-        lv_label_set_text_fmt(label_current_rpm, "%d RPM", currentPeak);
+        //lv_label_set_text_fmt(label_current_rpm, "%d RPM", currentPeak);
+        //lv_label_set_text_fmt(label_all_time_rpm, "%d RPM", global_all_time_best);
+        // 4. 更新左側 UI
+        updateCurrentRPM(currentPeak); // 🟢 替換成這行！呼叫你的滾動動畫引擎！
         lv_label_set_text_fmt(label_all_time_rpm, "%d RPM", global_all_time_best);
-
         // 5. 更新中間歷史紀錄 UI
         String histText = "";
         for (int i = 0; i < global_hist_count; i++) {
