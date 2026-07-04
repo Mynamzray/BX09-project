@@ -12,6 +12,27 @@ namespace BLE_Manager {
 }
 
 // 將原本宣告在全域的記憶庫與變數搬過來
+
+// ==========================================
+// 🛠️ 跨筆電字體強行解鎖修復 (繞過 lv_conf.h)
+// ==========================================
+#ifdef __cplusplus
+extern "C" {
+#endif
+    // 宣告 LVGL 字體結構
+    #ifndef LV_FONT_DECLARE
+        #define LV_FONT_DECLARE(font_name) extern const lv_font_t font_name;
+    #endif
+
+    // 強制把 24, 36, 48 號字體的點陣資料射進編譯器
+    LV_FONT_DECLARE(lv_font_montserrat_24)
+    LV_FONT_DECLARE(lv_font_montserrat_36)
+    LV_FONT_DECLARE(lv_font_montserrat_48)
+#ifdef __cplusplus
+}
+#endif
+
+// 将原本宣告在全域的記憶庫與變數搬過來
 Preferences prefs;
 uint16_t global_all_time_best = 0; 
 uint16_t global_history[8] = {0};
@@ -21,9 +42,9 @@ int global_hist_count = 0;
 // ==========================================
 // [模組 2] LVGL 渲染器 (橫向超寬儀表板版)
 // ==========================================
-// 🟢 強行宣告 LVGL 內建字體，繞過 lv_conf.h 的捉迷藏
-// extern const lv_font_t lv_font_montserrat_24;
-// extern const lv_font_t lv_font_montserrat_14;
+//extern const lv_font_t lv_font_montserrat_24;
+//extern const lv_font_t lv_font_montserrat_36;
+//extern const lv_font_t lv_font_montserrat_48;
 namespace UI {
     volatile bool readyToDraw = false;
 

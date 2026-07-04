@@ -6,6 +6,9 @@
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
 #include <Preferences.h> // 🟢 引入 ESP32 專用的記憶庫
+#include <WiFi.h>
+#include <WiFiUdp.h>
+WiFiUDP udp;
 // ==========================================
 // 2. Arduino 與你的藍牙函式庫
 // ==========================================
@@ -28,7 +31,13 @@ void setup() {
 Serial.begin(115200);
     delay(2000); // 讓 Serial Monitor 有時間連上
     Serial.println(">>> BX-09 OS (LVGL Version) 啟動 <<<");
-
+    // 🟢 新增：啟動專屬 Wi-Fi 熱點
+    Serial.println("啟動無線遙測熱點中...");
+    // 設定你的 Wi-Fi 名稱與密碼 (密碼至少需要 8 個字元)
+    WiFi.softAP("BX09_Telemetry", "beyblade123"); 
+    udp.begin(12345); // 開啟 12345 通訊埠
+    Serial.print("熱點已啟動！請讓筆電連線。IP: ");
+    Serial.println(WiFi.softAPIP());
     UI::init();             // 1. 讓 Waveshare 先初始化，隨便它怎麼洗腳位
     Button_Manager::init(); // 2. 我們最後出場，把 GPIO 0 強制搶回來！
     Battery_Manager::init(); // 🟢 加入這行：初始化電池監控

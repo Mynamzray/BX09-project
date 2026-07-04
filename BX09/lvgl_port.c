@@ -10,7 +10,7 @@
 #include "esp_lcd_panel_ops.h"
 #include "src/st7701_bsp/esp_lcd_st7701.h"
 #include "src/io_additions/esp_lcd_panel_io_additions.h"
-#include "demos/lv_demos.h"
+//#include "demos/lv_demos.h"
 
 static SemaphoreHandle_t lvgl_mux = NULL;
 #define EXAMPLE_LCD_BIT_PER_PIXEL 16
