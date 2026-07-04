@@ -5,7 +5,7 @@
 #include "user_config.h"
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
-#include <Preferences.h> // 🟢 引入 ESP32 專用的記憶庫
+#include <Preferences.h> 
 #include <WiFi.h>
 #include <WiFiUdp.h>
 WiFiUDP udp;
