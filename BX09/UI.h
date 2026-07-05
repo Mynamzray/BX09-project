@@ -5,8 +5,9 @@
 #include "user_config.h"
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
+#include "Physics.h"
 
-// 🟢 關鍵：預先宣告藍牙開關，讓 UI 模組知道有這個功能存在
+
 namespace BLE_Manager {
     void toggleBluetooth();
 }

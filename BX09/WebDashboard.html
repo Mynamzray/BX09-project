@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BX-09 戰情室</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            background-color: #1e1e1e;
+            color: #00ffcc;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            text-align: center;
+            margin: 0; padding: 20px;
+        }
+        canvas {
+            max-width: 100%;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+        .rpm-text { font-size: 3rem; font-weight: bold; margin: 10px 0; }
+    </style>
+</head>
+<body>
+
+    <h2>⚡ BX-09 實時轉速監控</h2>
+    <div class="rpm-text" id="rpmValue">RPM: 0</div>
+    <canvas id="rpmChart"></canvas>
+
+    <script>
+        // 1. 初始化 Chart.js 圖表
+        const ctx = document.getElementById('rpmChart').getContext('2d');
+        const rpmChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // X軸 (時間)
+                datasets: [{
+                    label: 'RPM',
+                    data: [], // Y軸 (轉速)
+                    borderColor: '#00ffcc',
+                    borderWidth: 2,
+                    fill: false,
+                    tension: 0.1 // 讓線條稍微平滑
+                }]
+            },
+            options: {
+                animation: false, // 關閉動畫以提高即時渲染效能
+                scales: {
+                    y: { beginAtZero: true, max: 10000 } // 假設最大轉速
+                }
+            }
+        });
+
+        // 2. 建立 WebSocket 連線 (連線至 ESP32)
+        const gateway = `ws://${window.location.hostname}/ws`;
+        const websocket = new WebSocket(gateway);
+
+        websocket.onopen = () => console.log('已連線至 ESP32!');
+        
+        // 3. 接收來自 ESP32 的數據
+        websocket.onmessage = (event) => {
+            // 解析 ESP32 傳來的 JSON (例如: {"rpm": 7500})
+            const data = JSON.parse(event.data); 
+            
+            // 更新大字體轉速
+            document.getElementById('rpmValue').innerText = `RPM: ${data.rpm}`;
+
+            // 更新圖表
+            const timeNow = new Date().toLocaleTimeString();
+            rpmChart.data.labels.push(timeNow);
+            rpmChart.data.datasets[0].data.push(data.rpm);
+
+            // 保持圖表最多顯示 20 筆資料，避免畫面太擠
+            if(rpmChart.data.labels.length > 20) {
+                rpmChart.data.labels.shift();
+                rpmChart.data.datasets[0].data.shift();
+            }
+            rpmChart.update();
+        };
+    </script>
+</body>
+</html>

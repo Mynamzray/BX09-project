@@ -1,3 +1,4 @@
+import os
 import socket
 import threading
 import queue
@@ -30,11 +31,13 @@ def udp_listener():
             data_queue.put({"type": "UDP", "msg": data.decode('utf-8', errors='ignore').strip()})
         except: pass
 
+# 🟢 全新：改用 Windows 底層指令，驗證 Wi-Fi 的 SSID 名稱是否正確
 def check_wifi():
     try:
-        res = subprocess.run(['ping', '-n', '1', '-w', '500', '192.168.4.1'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=0x08000000)
-        return res.returncode == 0
-    except: return False
+        output = subprocess.check_output(['netsh', 'wlan', 'show', 'interfaces'], creationflags=0x08000000).decode('utf-8', errors='ignore')
+        return WIFI_SSID in output
+    except: 
+        return False
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -42,15 +45,14 @@ ctk.set_default_color_theme("blue")
 class TelemetryApp(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("BX-09 TELEMETRY DASHBOARD V3.3 (Playback Edition)")
+        self.title("BX-09 TELEMETRY DASHBOARD V3.4 (QoL Update)")
         self.geometry("1400x800")
         self.configure(fg_color="#0A0A0A")
         
-        # 狀態變數初始化
         self.is_running = True
-        self.shot_database = []  # 儲存每一發完整數據的資料庫
+        self.shot_database = []  
         self.x_data, self.y_raw, self.y_filtered = [], [], []
-        self.current_udp_buffer = [] # 暫存當前發射的 UDP 字串
+        self.current_udp_buffer = [] 
         self.is_recording = False
         self.current_shot_time = ""
         self.wifi_state = None
@@ -64,7 +66,6 @@ class TelemetryApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1, uniform="half") 
         self.grid_columnconfigure(1, weight=1, uniform="half")
 
-        # --- 頂部狀態列 ---
         self.header_frame = ctk.CTkFrame(self, fg_color="#121212", corner_radius=0)
         self.header_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(10, 5))
 
@@ -142,9 +143,6 @@ class TelemetryApp(ctk.CTk):
         self.check_wifi_loop()
         self.process_queue_loop()
 
-    # ==========================================
-    # 邏輯控制區
-    # ==========================================
     def on_closing(self):
         self.is_running = False
         self.destroy()
@@ -164,17 +162,26 @@ class TelemetryApp(ctk.CTk):
             except: pass
         threading.Thread(target=run_disconnect, daemon=True).start()
 
+    # 🟢 全新：自動尋找絕對路徑，並在存檔後彈出資料夾
     def save_csv(self):
         global session_data
         if len(session_data) <= 1:
             self.log_sys("CSV Save Error: No data to save yet!")
             return
+            
         filename = f"BX09_Data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         try:
             with open(filename, mode='w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerows(session_data)
-            self.log_sys(f"SUCCESS: Data saved to {filename}")
+            
+            # 取得檔案完整路徑
+            full_path = os.path.abspath(filename)
+            self.log_sys(f"SUCCESS: Saved to {full_path}")
+            
+            # 命令 Windows 打開該檔案所在的資料夾
+            os.startfile(os.path.dirname(full_path))
+            
         except Exception as e:
             self.log_sys(f"CSV Save Error: {e}")
 
@@ -205,7 +212,6 @@ class TelemetryApp(ctk.CTk):
 
     def load_historical_shot(self, shot):
         self.lbl_status.configure(text=f"[ STATUS: REVIEWING SHOT #{shot['id']:02d} ]", text_color="#00FFCC")
-        
         self.lbl_peak.configure(text=str(shot['peak']))
         self.lbl_peak_raw.configure(text=f"RAW PEAK: {shot['raw_peak']}")
 
@@ -247,10 +253,10 @@ class TelemetryApp(ctk.CTk):
                 if current_state != self.wifi_state:
                     if current_state:
                         self.lbl_wifi.configure(text=f"[ WIFI: CONNECTED TO {WIFI_SSID} ]", text_color="#00FF00")
-                        self.log_sys("Connection established (192.168.4.1)")
+                        self.log_sys("Connection established (ESP32 Network)")
                     else:
                         self.lbl_wifi.configure(text="[ WIFI: DISCONNECTED ]", text_color="#FF0033")
-                        self.log_sys("WARNING: Wi-Fi signal lost!")
+                        self.log_sys("WARNING: Wi-Fi disconnected / Not on ESP32!")
                     self.wifi_state = current_state
             
             elif item["type"] == "SYS":
@@ -293,7 +299,6 @@ class TelemetryApp(ctk.CTk):
                         self.lbl_peak.configure(text=str(current_shot_peak))
                         self.lbl_peak_raw.configure(text=f"RAW PEAK: {max_raw}")
                         
-                        # 把整局的資料包裝起來存進資料庫
                         shot_data = {
                             'id': len(self.shot_database) + 1,
                             'peak': current_shot_peak,

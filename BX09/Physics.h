@@ -1,8 +1,6 @@
 #pragma once
 #include <Arduino.h>
-#include <WiFiUdp.h>
-
-extern WiFiUDP udp; // 借用主程式的全域 UDP 物件
+#include "Web_Manager.h" // 🟢 改為引入我們的 WebSocket 管理器
 
 namespace Physics {
     uint16_t rawProf[32] = {0};
@@ -72,7 +70,7 @@ namespace Physics {
         // 步驟 2-2: 線性補差 (🟢 修正：避開前 4 點的黃金發力期，防止爆發力被誤殺)
         for (int pass = 0; pass < 2; pass++) { 
             for (int i = 4; i < size - 1; i++) { // 從第 4 點之後才啟動跳動過濾
-                if (SP[i] == 0 || abs(SP[i] - SP[i-1]) > 7000 || abs(SP[i] - SP[i+1]) > 7000) { 
+                if (SP[i] == 0 || abs(SP[i] - SP[i-1]) > 5000 || abs(SP[i] - SP[i+1]) > 5000) { 
                     uint16_t interpolated = (SP[i-1] + SP[i+1]) / 2;
                     if (interpolated > 0 && interpolated < 25000) {
                         SP[i] = interpolated;
@@ -101,42 +99,32 @@ namespace Physics {
         }
 
         // ==========================================
-        // 4. [修復] 雙路徑輸出 (100% 對齊 Python 通訊協定)
+        // 4. 數據雙路徑輸出 (移除了 UDP 依賴，改為極速 WebSocket 廣播)
         // ==========================================
         if (trueMax > 0) {
             peak_rpm = trueMax;
 
-            // 發送起點標頭
-            Serial.println("===CSV_START===");
-            udp.beginPacket("192.168.4.255", 12345);
-            udp.print("===CSV_START===\n");
-            udp.endPacket();
-
-            // 循環發送點位
-            for(int i = 0; i < size; i++) {
-                Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], trueMax);
-
-                char buf[64];
-                sprintf(buf, "%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], trueMax);
-                udp.beginPacket("192.168.4.255", 12345);
-                udp.print(buf);
-                udp.endPacket();
-            }
-
-            // 發送終點標頭 (🟢 修正：徹底消滅舊版分隔線，對齊協定)
-            Serial.println("===CSV_END===");
-            udp.beginPacket("192.168.4.255", 12345);
-            udp.print("===CSV_END===\n");
-            udp.endPacket();
-        }
-
-        // ==========================================
-        // 5. 儲存結果並釋放記憶體
-        // ==========================================
-        if (trueMax > 0) {
+            // 計算全程平均值
             float sum_sp = 0;
             for (int i = 0; i < size; i++) sum_sp += SP[i];
             avg_rpm = size > 0 ? (sum_sp / size) : 0;
+
+            // 🟢 新增：將完整的發射曲線遙測數據，透過 WebSocket 廣播給連線的手機
+            Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm);
+
+            // 保留 Serial 的 CSV 格式輸出，方便串行調試
+            Serial.println("===CSV_START===");
+            for(int i = 0; i < size; i++) {
+                Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], trueMax);
+            }
+            Serial.println("===CSV_END===");
+        }
+
+        // ==========================================
+        // 5. 儲存結果並釋放記憶體 (這一步會將數據繪製在你 ESP32 手體 LCD 螢幕的 UI 面板上)
+        // ==========================================
+        if (trueMax > 0) {
+            // 這邊我們之前已經在第 4 步算過 avg_rpm 了，保留以供 LVGL 面板與本地 history 紀錄使用
             for (int i = 7; i > 0; i--) {
                 history[i] = history[i-1];
             }

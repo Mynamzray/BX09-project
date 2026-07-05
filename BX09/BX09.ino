@@ -7,49 +7,50 @@
 #include "lcd_bl_pwm_bsp.h"
 #include <Preferences.h> 
 #include <WiFi.h>
-#include <WiFiUdp.h>
-WiFiUDP udp;
-// ==========================================
-// 2. Arduino 與你的藍牙函式庫
-// ==========================================
 #include <Arduino.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
-#include <BLEAdvertisedDevice.h>
-
+// #include <BLEDevice.h>
+// #include <BLEUtils.h>
+// #include <BLEScan.h>
+// #include <BLEAdvertisedDevice.h>
+#include <NimBLEDevice.h>
 #define BX09_MAC "da:c4:51:04:58:86"
 #include "Physics.h"
 #include "UI.h"
 #include "BLE_Manager.h"
 #include "Button_Manager.h"
 #include "Battery_Manager.h"
+#include "Web_Manager.h"
+
 // ==========================================
 // 主程式入口 (Main Setup & Loop)
 // ==========================================
+
 void setup() {
-Serial.begin(115200);
-    delay(2000); // 讓 Serial Monitor 有時間連上
-    Serial.println(">>> BX-09 OS (LVGL Version) 啟動 <<<");
-    // 🟢 新增：啟動專屬 Wi-Fi 熱點
-    Serial.println("啟動無線遙測熱點中...");
-    // 設定你的 Wi-Fi 名稱與密碼 (密碼至少需要 8 個字元)
-    WiFi.softAP("BX09_Telemetry", "beyblade123"); 
-    udp.begin(12345); // 開啟 12345 通訊埠
-    Serial.print("熱點已啟動！請讓筆電連線。IP: ");
-    Serial.println(WiFi.softAPIP());
-    UI::init();             // 1. 讓 Waveshare 先初始化，隨便它怎麼洗腳位
-    Button_Manager::init(); // 2. 我們最後出場，把 GPIO 0 強制搶回來！
-    Battery_Manager::init(); // 🟢 加入這行：初始化電池監控
-    BLE_Manager::init();    // 3. 啟動藍牙
+    Serial.begin(115200);
+    delay(2000);
+
+    // 1. 先讓最肥的藍牙初始化，搶佔內部 RAM
+    BLE_Manager::init();    
+
+    // 2. 再啟動 Wi-Fi 和 Web Server
+    Web_Manager::init();
+
+    // 3. 最後再啟動 UI 和其他硬體
+    UI::init();             
+    Button_Manager::init(); 
+    Battery_Manager::init(); 
 }
 
 void loop() {
-    // 1. 維持藍牙連線
+    // 維持藍牙連線與系統監控
     BLE_Manager::connectTask();
-    Button_Manager::handle(); // 🟢 每局監聽按鍵狀態
-    Battery_Manager::handle(); // 🟢 每 5 秒更新一次電量
+    Button_Manager::handle();
+    Battery_Manager::handle(); 
+    
+    // 🟢 處理 WebSocket 的內部連線維護
+    Web_Manager::handle();
+
     UI::handleUpdate();
     lv_timer_handler(); 
     delay(5); 
-} 
+}
