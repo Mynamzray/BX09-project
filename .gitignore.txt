@@ -1,0 +1,9 @@
+# 忽略 Python 產生的日誌與快取
+*.csv
+__pycache__/
+
+# 忽略 Arduino 編譯產生的暫存檔 (如果有)
+build/
+*.elf
+*.bin
+*.hex
