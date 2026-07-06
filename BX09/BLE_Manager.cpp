@@ -118,7 +118,7 @@ namespace BLE_Manager {
         pBLEScan->setScanCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
-        pBLEScan->setWindow(50); 
+        pBLEScan->setWindow(90); 
     }
 
 void connectTask() {
