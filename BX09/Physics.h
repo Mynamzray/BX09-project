@@ -1,6 +1,9 @@
 #pragma once
 #include <Arduino.h>
-#include "Web_Manager.h" // 🟢 改為引入我們的 WebSocket 管理器
+
+// ==========================================
+// [模組 1] 物理運算器 (Physics Engine) - V4 官方 Delta 濾波版
+// ==========================================
 
 namespace Physics {
     uint16_t rawProf[32] = {0};
@@ -14,14 +17,12 @@ namespace Physics {
     int historyCount = 0;      
 
     uint16_t SP[32] = {0};
-    uint16_t rawSP[32] = {0}; // 備份原始數據
     uint16_t size = 0;
 
     void reset() {
         count = 0;
         memset(rawProf, 0, sizeof(rawProf));
         memset(SP, 0, sizeof(SP)); 
-        memset(rawSP, 0, sizeof(rawSP)); 
         size = 0;                  
     }
 
@@ -35,10 +36,12 @@ namespace Physics {
     bool calculate() {
         uint16_t T[32] = {0};
         uint16_t elapsedTime = 0;
+        uint16_t rawSP[32] = {0}; 
 
         memset(SP, 0, sizeof(SP));
-        memset(rawSP, 0, sizeof(rawSP));
         size = 0;
+        memset(T, 0, sizeof(T)); 
+        elapsedTime = 0;         
 
         // ==========================================
         // 1. 基本解碼
@@ -58,19 +61,18 @@ namespace Physics {
         }
 
         // ==========================================
-        // 2. 雜訊防護 (智慧型判定)
+        // 步驟 2: 原版平滑曲線處理 (保留給 WebBased Chart 畫圖用)
+        // 注意：這裡加入了 (int32_t) 防止 ESP32 算數下溢位變磚！
         // ==========================================
-        // 步驟 2-1: 單點高於 25000 RPM 直接丟棄
         for (int i = 0; i < size; i++) {
             if (SP[i] > 25000) {
                 SP[i] = 0; 
             }
         }
 
-        // 步驟 2-2: 線性補差 (🟢 修正：避開前 4 點的黃金發力期，防止爆發力被誤殺)
         for (int pass = 0; pass < 2; pass++) { 
-            for (int i = 4; i < size - 1; i++) { // 從第 4 點之後才啟動跳動過濾
-                if (SP[i] == 0 || abs(SP[i] - SP[i-1]) > 5000 || abs(SP[i] - SP[i+1]) > 5000) { 
+            for (int i = 1; i < size - 1; i++) {
+                if (SP[i] == 0 || abs((int32_t)SP[i] - (int32_t)SP[i-1]) > 6000 || abs((int32_t)SP[i] - (int32_t)SP[i+1]) > 6000) { 
                     uint16_t interpolated = (SP[i-1] + SP[i+1]) / 2;
                     if (interpolated > 0 && interpolated < 25000) {
                         SP[i] = interpolated;
@@ -79,52 +81,77 @@ namespace Physics {
             }
         }
 
-        // 步驟 2-3: 邊界平滑
-        if (size > 4) {
-            if (abs(SP[size-1] - SP[size-2]) > 6000) SP[size-1] = SP[size-2];
+        if (size > 1) {
+            if (abs((int32_t)SP[0] - (int32_t)SP[1]) > 6000) SP[0] = SP[1];
+            if (abs((int32_t)SP[size-1] - (int32_t)SP[size-2]) > 6000) SP[size-1] = SP[size-2];
         }
 
         // ==========================================
-        // 3. 尋找峰值
+        // 步驟 3: [全新核心] 官方 2000 RPM Delta Rule (精準擷取 Peak)
         // ==========================================
         uint16_t trueMax = 0;
-        int peakIndex = 0;
+        uint16_t calcSP[32] = {0};
+        int calcSize = size;
+        
+        // 建立沙盒：使用原始數據來做剔除運算，完全不破壞畫圖用的 SP 與 rawSP
+        for(int i = 0; i < size; i++) {
+            calcSP[i] = rawSP[i];
+        }
 
-        for (int i = 0; i < size; i++) {
-            if (SP[i] < 1000 && i >= 3) break; 
-            if (SP[i] > trueMax) {
-                trueMax = SP[i];
-                peakIndex = i;
+        // 開始進行 Outlier Rejection 濾波
+        while (calcSize > 0) {
+            uint16_t currentPeak = 0;
+            int peakIndex = -1;
+
+            // 尋找當前沙盒內的最大值
+            for (int i = 0; i < calcSize; i++) {
+                if (calcSP[i] > currentPeak) {
+                    currentPeak = calcSP[i];
+                    peakIndex = i;
+                }
+            }
+
+            // 防呆：如果找不到或為 0，直接結束
+            if (peakIndex == -1 || currentPeak == 0) break;
+
+            bool isNoise = false;
+            
+            // 邊界與 Delta 2000 判定
+            if (calcSize == 1) {
+                trueMax = currentPeak;
+                break;
+            } else if (peakIndex == 0) {
+                if (abs((int32_t)currentPeak - (int32_t)calcSP[1]) > 2000) isNoise = true;
+            } else if (peakIndex == calcSize - 1) {
+                if (abs((int32_t)currentPeak - (int32_t)calcSP[calcSize - 2]) > 2000) isNoise = true;
+            } else {
+                if (abs((int32_t)currentPeak - (int32_t)calcSP[peakIndex - 1]) > 2000 && 
+                    abs((int32_t)currentPeak - (int32_t)calcSP[peakIndex + 1]) > 2000) {
+                    isNoise = true;
+                }
+            }
+
+            if (isNoise) {
+                // 這是機械雜訊！將後面的數據往前移來「剔除」這個點
+                for (int i = peakIndex; i < calcSize - 1; i++) {
+                    calcSP[i] = calcSP[i + 1];
+                }
+                calcSize--;
+            } else {
+                // 找到真實官方極速！鎖定成績並跳出
+                trueMax = currentPeak;
+                break;
             }
         }
 
         // ==========================================
-        // 4. 數據雙路徑輸出 (移除了 UDP 依賴，改為極速 WebSocket 廣播)
+        // 4. 儲存結果並釋放記憶體
         // ==========================================
         if (trueMax > 0) {
             peak_rpm = trueMax;
-
-            // 計算全程平均值
             float sum_sp = 0;
             for (int i = 0; i < size; i++) sum_sp += SP[i];
             avg_rpm = size > 0 ? (sum_sp / size) : 0;
-
-            // 🟢 新增：將完整的發射曲線遙測數據，透過 WebSocket 廣播給連線的手機
-            Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm);
-
-            // 保留 Serial 的 CSV 格式輸出，方便串行調試
-            Serial.println("===CSV_START===");
-            for(int i = 0; i < size; i++) {
-                Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], trueMax);
-            }
-            Serial.println("===CSV_END===");
-        }
-
-        // ==========================================
-        // 5. 儲存結果並釋放記憶體 (這一步會將數據繪製在你 ESP32 手體 LCD 螢幕的 UI 面板上)
-        // ==========================================
-        if (trueMax > 0) {
-            // 這邊我們之前已經在第 4 步算過 avg_rpm 了，保留以供 LVGL 面板與本地 history 紀錄使用
             for (int i = 7; i > 0; i--) {
                 history[i] = history[i-1];
             }
@@ -133,6 +160,18 @@ namespace Physics {
             if (peak_rpm > allTimePeak) {
                 allTimePeak = peak_rpm;
             }
+        }
+        
+        // ==========================================
+        // 5. CSV 與 Web 網頁串流輸出
+        // ==========================================
+        if (trueMax > 0) {
+            Serial.println("===CSV_START===");
+            for(int i = 0; i < size; i++) {
+                // 格式：經過時間(ms), 原始轉速, 過濾轉速, 本次發射最高轉速(已套用 Delta Rule)
+                Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], (int)peak_rpm);
+            }
+            Serial.println("===CSV_END===");
         }
 
         count = 0;

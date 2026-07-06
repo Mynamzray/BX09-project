@@ -4,253 +4,295 @@
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 
+AsyncWebServer server(80);
+AsyncWebSocket ws("/ws");
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
-// 建立網頁伺服器與 WebSocket 實例 (監聽 Port 80)
- AsyncWebServer server(80);
-AsyncWebSocket ws("/ws");
 
-// 前端 Dashboard 網頁原始碼 (存於 PROGMEM 中節省 RAM 空間)
+// 🟢 100% 離線版網頁：零外部依賴 (No Tailwind, No Chart.js CDN)
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="zh-TW" class="dark">
+<html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BX-09 戰情室 - Web Telemetry</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BX-09 戰情室</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap');
-        .font-tech { font-family: 'Share Tech Mono', monospace; }
-        .glow-text-cyan { text-shadow: 0 0 8px rgba(6, 182, 212, 0.8), 0 0 15px rgba(6, 182, 212, 0.3); }
-        .glow-text-amber { text-shadow: 0 0 8px rgba(245, 158, 11, 0.8), 0 0 15px rgba(245, 158, 11, 0.3); }
-        .border-cyan-glow { box-shadow: 0 0 15px rgba(6, 182, 212, 0.15); border: 1px solid rgba(6, 182, 212, 0.3); }
+        /* 內嵌原生 CSS 完美還原 Tailwind 暗黑科技風 */
+        :root {
+            --bg: #09090b; --panel: #18181b; --border: #27272a;
+            --text: #f4f4f5; --muted: #a1a1aa;
+            --cyan: #06b6d4; --amber: #f59e0b; --red: #ef4444; --emerald: #10b981;
+        }
+        * { box-sizing: border-box; }
+        body { 
+            background: var(--bg); color: var(--text); margin: 0; padding: 0;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            user-select: none; -webkit-user-select: none;
+        }
+        header { 
+            background: rgba(24,24,27,0.8); border-bottom: 1px solid var(--border);
+            padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;
+        }
+        .title { font-size: 1.1rem; font-weight: bold; color: var(--cyan); letter-spacing: 1px; }
+        .badge-version { background: rgba(6,182,212,0.1); border: 1px solid var(--cyan); color: var(--cyan); padding: 2px 8px; border-radius: 12px; font-size: 0.7rem; margin-left: 8px;}
+        
+        .status-pill { background: var(--panel); border: 1px solid var(--border); padding: 4px 12px; border-radius: 20px; display: flex; align-items: center; gap: 8px; font-size: 0.75rem; color: var(--muted); }
+        .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); box-shadow: 0 0 5px var(--red); }
+        .dot.connected { background: var(--emerald); box-shadow: 0 0 5px var(--emerald); }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 12px; display: grid; gap: 12px; grid-template-columns: 1fr; }
+        @media(min-width: 1024px) { .container { grid-template-columns: 1fr 3fr; padding: 20px; gap: 20px; } }
+        
+        .col { display: flex; flex-direction: column; gap: 12px; }
+        .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; }
+        
+        .card-title { font-size: 0.75rem; color: var(--muted); letter-spacing: 2px; margin-bottom: 4px; text-transform: uppercase; }
+        .card-value { font-size: 2.8rem; font-weight: 900; margin: 5px 0; }
+        .card-desc { font-size: 0.7rem; color: #71717a; }
+        
+        .text-cyan { color: var(--cyan); text-shadow: 0 0 12px rgba(6,182,212,0.5); }
+        .text-amber { color: var(--amber); text-shadow: 0 0 12px rgba(245,158,11,0.5); }
+        
+        .tag-tr { position: absolute; top: 0; right: 0; padding: 2px 8px; font-size: 0.65rem; border-bottom-left-radius: 8px; font-weight: bold; }
+        .tag-cyan { background: rgba(6,182,212,0.15); color: var(--cyan); }
+        .tag-amber { background: rgba(245,158,11,0.15); color: var(--amber); }
+
+        /* 圖表區塊 */
+        .chart-container { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-height: 350px; display: flex; flex-direction: column; }
+        .chart-header { display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 10px; color: var(--muted); }
+        canvas { width: 100%; height: 300px; display: block; flex-grow: 1; }
+
+        /* 表格區塊 */
+        .logs-section { padding: 16px; border-top: 1px solid var(--border); margin-top: 10px; }
+        table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+        th { text-align: left; padding: 8px; color: var(--muted); border-bottom: 1px solid var(--border); }
+        td { padding: 10px 8px; border-bottom: 1px solid rgba(39,39,42,0.5); }
+        tr:hover { background: rgba(255,255,255,0.02); cursor: pointer; }
     </style>
 </head>
-<body class="bg-zinc-950 text-slate-100 min-h-screen flex flex-col font-tech select-none">
+<body>
 
-    <header class="border-b border-zinc-900 bg-zinc-900/40 backdrop-blur px-4 py-3 flex items-center justify-between">
-        <div class="flex items-center space-x-3">
-            <span class="text-xl font-bold tracking-wider text-cyan-400">⚡ BX-09 TELEMETRY</span>
-            <span class="text-xs bg-cyan-950 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded-full">v4.0 AP Mode</span>
+    <header>
+        <div>
+            <span class="title">⚡ BX-09 TELEMETRY</span>
+            <span class="badge-version">OFFLINE v5.0</span>
         </div>
-        <div id="statusBadge" class="flex items-center space-x-2 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-800">
-            <span id="statusIndicator" class="h-2 w-2 rounded-full bg-red-500 animate-pulse"></span>
-            <span id="statusText" class="text-xs text-slate-400">正在嘗試連線...</span>
+        <div class="status-pill" id="statusBadge">
+            <div class="dot" id="statusDot"></div>
+            <span id="statusText">等待連線...</span>
         </div>
     </header>
 
-    <main class="flex-grow p-4 max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <div class="lg:col-span-1 flex flex-col space-y-4">
-            <div id="launchStateCard" class="bg-zinc-900/60 p-4 rounded-xl border border-zinc-800 text-center transition-all duration-300">
-                <span id="launchStateText" class="text-sm tracking-widest text-slate-400 block mb-1">STATUS</span>
-                <span id="launchStateVal" class="text-lg font-bold text-amber-500 animate-pulse">WAITING FOR LAUNCH</span>
+    <div class="container">
+        <!-- 數值面板 -->
+        <div class="col">
+            <div class="card" id="launchStateCard" style="border-color: var(--amber);">
+                <span class="card-title" id="launchStateTitle">STATUS</span>
+                <span class="card-value" id="launchStateVal" style="font-size: 1.2rem; color: var(--amber);">WAITING FOR LAUNCH</span>
             </div>
-            <div class="bg-zinc-900/40 p-5 rounded-xl border-cyan-glow flex flex-col items-center relative overflow-hidden">
-                <div class="absolute top-0 right-0 bg-cyan-500/10 text-cyan-400 text-xs px-2.5 py-0.5 rounded-bl">PEAK</div>
-                <span class="text-sm tracking-widest text-cyan-500/80 mb-1">PEAK RPM</span>
-                <span id="peakVal" class="text-5xl font-black text-cyan-400 glow-text-cyan my-1">0</span>
-                <span class="text-xs text-slate-500">最高啟動轉速</span>
+            <div class="card" style="box-shadow: 0 0 15px rgba(6,182,212,0.1); border-color: rgba(6,182,212,0.3);">
+                <div class="tag-tr tag-cyan">PEAK</div>
+                <span class="card-title text-cyan">PEAK RPM</span>
+                <span class="card-value text-cyan" id="peakVal">0</span>
+                <span class="card-desc">最高啟動轉速</span>
             </div>
-            <div class="bg-zinc-900/40 p-5 rounded-xl border border-zinc-800/80 flex flex-col items-center relative overflow-hidden">
-                <div class="absolute top-0 right-0 bg-amber-500/10 text-amber-400 text-xs px-2.5 py-0.5 rounded-bl">AVG</div>
-                <span class="text-sm tracking-widest text-amber-500/80 mb-1">AVERAGE RPM</span>
-                <span id="avgVal" class="text-4xl font-bold text-amber-400 glow-text-amber my-1">0</span>
-                <span class="text-xs text-slate-500">全程平均轉速</span>
+            <div class="card">
+                <div class="tag-tr tag-amber">AVG</div>
+                <span class="card-title text-amber">AVERAGE RPM</span>
+                <span class="card-value text-amber" id="avgVal">0</span>
+                <span class="card-desc">全程平均轉速</span>
             </div>
-            <div class="bg-zinc-900/40 p-5 rounded-xl border border-zinc-800/80 flex flex-col items-center relative overflow-hidden">
-                <span class="text-sm tracking-widest text-slate-400 mb-1">LAUNCH DURATION</span>
-                <span id="durationVal" class="text-3xl font-bold text-slate-300 my-1">0 <span class="text-sm font-normal">ms</span></span>
-                <span class="text-xs text-slate-500">拉線發力時長</span>
+            <div class="card">
+                <span class="card-title">LAUNCH DURATION</span>
+                <span class="card-value" id="durationVal" style="color: var(--text);">0<span style="font-size: 1rem; font-weight: normal;">ms</span></span>
+                <span class="card-desc">拉線發力時長</span>
             </div>
         </div>
 
-        <div class="lg:col-span-3 bg-zinc-900/20 p-5 rounded-xl border border-zinc-900 flex flex-col min-h-[350px] lg:min-h-[450px]">
-            <div class="flex items-center justify-between mb-4">
-                <h3 class="text-sm font-bold tracking-wider text-slate-400">📈 SPIN ACCELERATION PROFILE</h3>
-                <span class="text-xs text-cyan-500/80">X: Time (ms) | Y: Speed (RPM)</span>
+        <!-- 自製原生 Canvas 圖表 -->
+        <div class="chart-container">
+            <div class="chart-header">
+                <span style="font-weight: bold; letter-spacing: 1px;">📈 SPIN ACCELERATION PROFILE</span>
+                <span style="color: var(--cyan);">X: Time(ms) | Y: Speed(RPM)</span>
             </div>
-            <div class="flex-grow relative w-full h-full min-h-[300px]">
+            <div style="position: relative; width: 100%; height: 100%;">
                 <canvas id="telemetryChart"></canvas>
             </div>
         </div>
-    </main>
+    </div>
 
-    <footer class="border-t border-zinc-900 bg-zinc-900/20 p-4 w-full">
-        <div class="max-w-7xl mx-auto">
-            <h3 class="text-xs font-bold tracking-wider text-slate-500 mb-3 uppercase">📋 Session Launch Logs</h3>
-            <div class="overflow-x-auto">
-                <table class="w-full text-left text-xs border-collapse">
+    <!-- 歷史紀錄 -->
+    <div class="logs-section">
+        <div style="max-width: 1200px; margin: 0 auto;">
+            <h3 style="font-size: 0.8rem; color: var(--muted); letter-spacing: 1px; text-transform: uppercase;">📋 Session Launch Logs</h3>
+            <div style="overflow-x: auto;">
+                <table>
                     <thead>
-                        <tr class="border-b border-zinc-900 text-slate-400">
-                            <th class="py-2 px-3">發射 ID</th>
-                            <th class="py-2 px-3">時間</th>
-                            <th class="py-2 px-3 text-cyan-400">最高轉速 (Peak)</th>
-                            <th class="py-2 px-3 text-amber-400">平均轉速 (Avg)</th>
-                            <th class="py-2 px-3">資料點數</th>
+                        <tr>
+                            <th>ID</th><th>時間</th><th style="color: var(--cyan);">最高(Peak)</th><th style="color: var(--amber);">平均(Avg)</th><th>點數</th>
                         </tr>
                     </thead>
-                    <tbody id="logTableBody" class="divide-y divide-zinc-900/60">
-                        <tr id="emptyRow" class="text-slate-500">
-                            <td colspan="5" class="py-4 text-center">等待發射數據...</td>
-                        </tr>
+                    <tbody id="logTableBody">
+                        <tr id="emptyRow"><td colspan="5" style="text-align: center; color: var(--muted);">等待發射數據...</td></tr>
                     </tbody>
                 </table>
             </div>
         </div>
-    </footer>
+    </div>
 
     <script>
-        const statusBadge = document.getElementById('statusBadge');
-        const statusIndicator = document.getElementById('statusIndicator');
-        const statusText = document.getElementById('statusText');
-        const peakVal = document.getElementById('peakVal');
-        const avgVal = document.getElementById('avgVal');
-        const durationVal = document.getElementById('durationVal');
-        const launchStateCard = document.getElementById('launchStateCard');
-        const launchStateVal = document.getElementById('launchStateVal');
-        const logTableBody = document.getElementById('logTableBody');
+        // 🟢 內建輕量級 Canvas 繪圖引擎 (取代 Chart.js)
+        function drawChart(tArr, rawArr, filteredArr) {
+            const canvas = document.getElementById('telemetryChart');
+            const ctx = canvas.getContext('2d');
+            
+            // 處理 Retina 高解析度螢幕防模糊
+            const dpr = window.devicePixelRatio || 1;
+            const rect = canvas.parentNode.getBoundingClientRect();
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+            
+            const w = rect.width, h = rect.height;
+            ctx.clearRect(0, 0, w, h);
+            if(!tArr || tArr.length === 0) return;
 
+            const padX = 40, padY = 20;
+            const drawW = w - padX - 10, drawH = h - padY * 2;
+            const maxT = tArr[tArr.length-1] || 1;
+            const maxRPM = Math.max(...filteredArr, ...rawArr, 5000); // Y軸最高點
+
+            const mapX = (t) => padX + (t / maxT) * drawW;
+            const mapY = (v) => h - padY - (v / maxRPM) * drawH;
+
+            // 1. 畫背景網格與 Y 軸文字
+            ctx.lineWidth = 1;
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.font = '10px monospace';
+            for(let i=0; i<=5; i++) {
+                let val = Math.round(maxRPM * (i/5));
+                let y = mapY(val);
+                ctx.strokeStyle = '#27272a';
+                ctx.beginPath(); ctx.moveTo(padX, y); ctx.lineTo(w, y); ctx.stroke();
+                ctx.fillStyle = '#a1a1aa';
+                ctx.fillText(val, padX - 5, y);
+            }
+
+            // 2. 畫 X 軸文字 (起點與終點)
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            ctx.fillText("0ms", padX, h - padY + 5);
+            ctx.fillText(maxT + "ms", w - 10, h - padY + 5);
+
+            // 3. 畫 Raw Data (紅色半透明)
+            ctx.strokeStyle = 'rgba(239, 68, 68, 0.4)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for(let i=0; i<tArr.length; i++) {
+                let x = mapX(tArr[i]), y = mapY(rawArr[i]);
+                if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+            }
+            ctx.stroke();
+
+            // 4. 畫 Filtered Data (青色主線)
+            ctx.strokeStyle = '#06b6d4';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            for(let i=0; i<tArr.length; i++) {
+                let x = mapX(tArr[i]), y = mapY(filteredArr[i]);
+                if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+            }
+            ctx.stroke();
+        }
+
+        // --- WebSocket 邏輯 ---
+        let socket;
         let launchHistory = [];
 
-        const ctx = document.getElementById('telemetryChart').getContext('2d');
-        const telemetryChart = new Chart(ctx, {
-            type: 'line',
-            data: {
-                labels: [], 
-                datasets: [
-                    {
-                        label: '過濾平滑曲線 (Filtered SP)',
-                        data: [],
-                        borderColor: '#06b6d4',
-                        borderWidth: 3,
-                        pointRadius: 2,
-                        pointBackgroundColor: '#06b6d4',
-                        tension: 0.15,
-                        fill: false
-                    },
-                    {
-                        label: '原始感測雜訊 (Raw SP)',
-                        data: [],
-                        borderColor: 'rgba(239, 68, 68, 0.4)',
-                        borderWidth: 0,
-                        pointRadius: 5,
-                        pointHoverRadius: 7,
-                        pointBackgroundColor: '#ef4444',
-                        showLine: false,
-                        fill: false
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                animation: { duration: 300 }, 
-                scales: {
-                    x: { grid: { color: '#18181b' }, ticks: { color: '#71717a' }, title: { display: true, text: '時間 (ms)', color: '#71717a' } },
-                    y: { beginAtZero: true, max: 20000, grid: { color: '#18181b' }, ticks: { color: '#71717a' }, title: { display: true, text: '轉速 (RPM)', color: '#71717a' } }
-                },
-                plugins: { legend: { labels: { color: '#e4e4e7', font: { family: 'Share Tech Mono' } } } }
-            }
-        });
-
-        const gateway = `ws://${window.location.hostname}/ws`;
-        let socket;
-
         function initWebSocket() {
-            socket = new WebSocket(gateway);
-            socket.onopen = onOpen;
-            socket.onclose = onClose;
-            socket.onmessage = onMessage;
-        }
-
-        function onOpen() {
-            statusIndicator.className = "h-2 w-2 rounded-full bg-emerald-500 animate-pulse";
-            statusText.innerText = "已連線至 BX-09 晶片";
-            statusText.className = "text-xs text-emerald-400";
-            statusBadge.className = "flex items-center space-x-2 bg-zinc-900 px-3 py-1 rounded-full border border-emerald-800/30";
-        }
-
-        function onClose() {
-            statusIndicator.className = "h-2 w-2 rounded-full bg-red-500 animate-pulse";
-            statusText.innerText = "已斷線，5秒後重連...";
-            statusText.className = "text-xs text-red-400";
-            statusBadge.className = "flex items-center space-x-2 bg-zinc-900 px-3 py-1 rounded-full border border-red-800/30";
-            setTimeout(initWebSocket, 5000);
-        }
-
-        function onMessage(event) {
-            try {
-                const data = JSON.parse(event.data);
-                if (data.type === "launch") handleNewLaunch(data);
-            } catch (err) { console.error(err); }
+            socket = new WebSocket('ws://192.168.4.1/ws');
+            socket.onopen = () => {
+                document.getElementById('statusDot').className = 'dot connected';
+                document.getElementById('statusText').innerText = '已連線至 BX-09';
+                document.getElementById('statusText').style.color = 'var(--emerald)';
+            };
+            socket.onclose = () => {
+                document.getElementById('statusDot').className = 'dot';
+                document.getElementById('statusText').innerText = '已斷線，重連中...';
+                document.getElementById('statusText').style.color = 'var(--red)';
+                setTimeout(initWebSocket, 2000);
+            };
+            socket.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === "launch") handleNewLaunch(data);
+                } catch (err) {}
+            };
         }
 
         function handleNewLaunch(data) {
-            launchStateCard.className = "bg-emerald-950/40 p-4 rounded-xl border border-emerald-500 text-center transition-all duration-300";
-            launchStateVal.className = "text-lg font-bold text-emerald-400 glow-text-cyan";
-            launchStateVal.innerText = "💥 LAUNCH DETECTED!";
-
+            document.getElementById('launchStateCard').style.borderColor = 'var(--emerald)';
+            document.getElementById('launchStateVal').style.color = 'var(--emerald)';
+            document.getElementById('launchStateVal').innerText = '💥 DETECTED!';
+            
             setTimeout(() => {
-                launchStateCard.className = "bg-zinc-900/60 p-4 rounded-xl border border-zinc-800 text-center transition-all duration-300";
-                launchStateVal.className = "text-lg font-bold text-amber-500 animate-pulse";
-                launchStateVal.innerText = "WAITING FOR LAUNCH";
-            }, 2500);
+                document.getElementById('launchStateCard').style.borderColor = 'var(--amber)';
+                document.getElementById('launchStateVal').style.color = 'var(--amber)';
+                document.getElementById('launchStateVal').innerText = 'WAITING FOR LAUNCH';
+            }, 2000);
 
-            peakVal.innerText = data.peak.toLocaleString();
-            avgVal.innerText = Math.round(data.avg).toLocaleString();
+            document.getElementById('peakVal').innerText = data.peak.toLocaleString();
+            document.getElementById('avgVal').innerText = Math.round(data.avg).toLocaleString();
             const totalDuration = data.t.length > 0 ? data.t[data.t.length - 1] : 0;
-            durationVal.innerHTML = `${totalDuration} <span class="text-sm font-normal">ms</span>`;
+            document.getElementById('durationVal').innerHTML = `${totalDuration}<span style="font-size: 1rem; font-weight: normal;">ms</span>`;
 
-            updateChart(data.t, data.raw, data.filtered);
+            drawChart(data.t, data.raw, data.filtered);
 
             const timestamp = new Date().toLocaleTimeString();
-            const launchItem = {
-                id: launchHistory.length + 1, time: timestamp, peak: data.peak, avg: data.avg, size: data.size, t: data.t, raw: data.raw, filtered: data.filtered
-            };
-
-            launchHistory.unshift(launchItem);
-            if (launchHistory.length > 10) launchHistory.pop(); 
-            renderHistoryTable();
+            launchHistory.unshift({ id: launchHistory.length + 1, time: timestamp, ...data });
+            if (launchHistory.length > 10) launchHistory.pop();
+            renderTable();
         }
 
-        function updateChart(tArr, rawArr, filteredArr) {
-            telemetryChart.data.labels = tArr;
-            telemetryChart.data.datasets[0].data = filteredArr;
-            telemetryChart.data.datasets[1].data = rawArr;
-            telemetryChart.update();
-        }
-
-        function renderHistoryTable() {
-            const emptyRow = document.getElementById('emptyRow');
-            if (emptyRow) emptyRow.remove();
-
-            logTableBody.innerHTML = '';
+        function renderTable() {
+            const tbody = document.getElementById('logTableBody');
+            tbody.innerHTML = '';
             launchHistory.forEach((item) => {
                 const tr = document.createElement('tr');
-                tr.className = "border-b border-zinc-900/40 hover:bg-zinc-900/60 cursor-pointer transition-colors duration-200";
                 tr.innerHTML = `
-                    <td class="py-2.5 px-3 font-bold text-slate-400">#${item.id}</td>
-                    <td class="py-2.5 px-3 text-slate-400">${item.time}</td>
-                    <td class="py-2.5 px-3 text-cyan-400 font-bold">${item.peak.toLocaleString()} RPM</td>
-                    <td class="py-2.5 px-3 text-amber-500">${Math.round(item.avg).toLocaleString()} RPM</td>
-                    <td class="py-2.5 px-3 text-slate-500">${item.size} Pts</td>
+                    <td style="font-weight:bold;">#${item.id}</td>
+                    <td>${item.time}</td>
+                    <td style="color:var(--cyan); font-weight:bold;">${item.peak.toLocaleString()} RPM</td>
+                    <td style="color:var(--amber);">${Math.round(item.avg).toLocaleString()} RPM</td>
+                    <td>${item.size}</td>
                 `;
                 tr.onclick = () => {
-                    peakVal.innerText = item.peak.toLocaleString();
-                    avgVal.innerText = Math.round(item.avg).toLocaleString();
-                    const totalDuration = item.t.length > 0 ? item.t[item.t.length - 1] : 0;
-                    durationVal.innerHTML = `${totalDuration} <span class="text-sm font-normal">ms</span>`;
-                    updateChart(item.t, item.raw, item.filtered);
-                    launchStateVal.innerText = `🔍 ANALYSIS LAUNCH #${item.id}`;
-                    launchStateVal.className = "text-lg font-bold text-cyan-400";
+                    document.getElementById('peakVal').innerText = item.peak.toLocaleString();
+                    document.getElementById('avgVal').innerText = Math.round(item.avg).toLocaleString();
+                    document.getElementById('durationVal').innerHTML = `${item.t[item.t.length - 1]}<span style="font-size: 1rem; font-weight: normal;">ms</span>`;
+                    drawChart(item.t, item.raw, item.filtered);
                 };
-                logTableBody.appendChild(tr);
+                tbody.appendChild(tr);
             });
         }
 
-        window.onload = initWebSocket;
+        // 初始化
+        window.onload = () => {
+            initWebSocket();
+            // 初始化時畫一個空圖表網格
+            drawChart([0, 100], [0, 0], [0, 0]); 
+            
+            // 監聽螢幕旋轉/調整大小，重繪 Canvas 防止變形
+            window.addEventListener('resize', () => {
+                if(launchHistory.length > 0) {
+                    const latest = launchHistory[0];
+                    drawChart(latest.t, latest.raw, latest.filtered);
+                } else {
+                    drawChart([0, 100], [0, 0], [0, 0]);
+                }
+            });
+        };
     </script>
 </body>
 </html>
@@ -266,28 +308,33 @@ void Web_Manager::init() {
     Serial.println("===========================================");
     Serial.println("🟢 啟動專屬 Wi-Fi 熱點與 Web 戰情室...");
     
-    WiFi.softAP("BX09_Telemetry", "beyblade123");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
+    WiFi.softAP("BX09_Telemetry"); 
     
-    Serial.print("熱點啟動成功！AP SSID: BX09_Telemetry\n");
-    Serial.print("👉 請用手機連線，瀏覽器輸入: ");
-    Serial.println(WiFi.softAPIP());
+    // DNS 攔截：Captive Portal 的核心
     dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
-    // 🟢 修正：這裡必須是小寫的 server，對應上面定義的 AsyncWebServer server(80);
+    
+    Serial.print("熱點啟動成功！AP SSID: BX09_Telemetry (Open Wi-Fi)\n");
+
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         request->send_P(200, "text/html", index_html);
-        server.begin();
+    });
+
+    // 攔截所有其他請求導向首頁 (觸發彈窗)
+    server.onNotFound([](AsyncWebServerRequest *request){
+        request->redirect("http://192.168.4.1/");
     });
 
     ws.onEvent(onEvent);
-    server.addHandler(&ws); // 🟢 這裡也是小寫 server
-    server.begin();         // 🟢 這裡也是小寫 server
-    
-    Serial.println("🟢 Web Server 啟動完成！");
+    server.addHandler(&ws);
+    server.begin();
+    Serial.println("🟢 Captive Portal & Web Server 啟動完成！");
     Serial.println("===========================================");
 }
 
 void Web_Manager::handle() {
-    dnsServer.processNextRequest(); // 🟢 攔截手機發出的連線檢查請求
+    dnsServer.processNextRequest();
     ws.cleanupClients();
 }
 
@@ -301,26 +348,12 @@ void Web_Manager::broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, ui
     json += "\"size\":" + String(size) + ",";
     
     json += "\"t\":[";
-    for(int i = 0; i < size; i++) {
-        json += String(T[i]);
-        if(i < size - 1) json += ",";
-    }
-    json += "],";
-
-    json += "\"raw\":[";
-    for(int i = 0; i < size; i++) {
-        json += String(rawSP[i]);
-        if(i < size - 1) json += ",";
-    }
-    json += "],";
-
-    json += "\"filtered\":[";
-    for(int i = 0; i < size; i++) {
-        json += String(SP[i]);
-        if(i < size - 1) json += ","; 
-    }
-    json += "]";
-    json += "}";
+    for(int i = 0; i < size; i++) { json += String(T[i]); if(i < size - 1) json += ","; }
+    json += "],\"raw\":[";
+    for(int i = 0; i < size; i++) { json += String(rawSP[i]); if(i < size - 1) json += ","; }
+    json += "],\"filtered\":[";
+    for(int i = 0; i < size; i++) { json += String(SP[i]); if(i < size - 1) json += ","; }
+    json += "]}";
 
     ws.textAll(json);
 }

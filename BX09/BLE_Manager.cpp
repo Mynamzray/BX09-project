@@ -57,25 +57,51 @@ namespace BLE_Manager {
         }
     }
 
-    // 補回 BX-09 封包解析邏輯
+    // 補回 BX-09 封包解析邏輯與拔除偵測
     void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
         if (length == 0) return;
         uint8_t header = pData[0];
 
+        // 🟢 1. 處理系統狀態封包 (0xA0)
         if (header == 0xA0) {
+            // [智慧嗅探器] 印出 A0 封包，方便隨時監控硬體物理狀態
+            Serial.print("[BLE 系統狀態攔截] ");
+            for (size_t i = 0; i < length; i++) {
+                Serial.printf("%02X ", pData[i]); 
+            }
+            Serial.println(); 
+
+            // [判斷安裝] -> 物理開關壓下 (0x04)
             if (length >= 4 && pData[3] == 0x04) {
                 Serial.println("\n[狀態] 🟢 陀螺已安裝");
                 Physics::reset();  
-                isBeyInstalled = true;
+                isBeyInstalled = true; // connectTask 會自動把狀態 2 推給 UI 信箱
             } 
+            // 🟢 [判斷反悔/手動拔除] -> 物理開關彈起 (0x00)
+            else if (length >= 4 && pData[3] == 0x00) {
+                if (isBeyInstalled) { // 確保原本是裝著的才觸發
+                    Serial.println("\n[狀態] 🟡 陀螺已手動拔除");
+                    isBeyInstalled = false; // connectTask 會自動把狀態 1 推給 UI 信箱
+                }
+            }
         }
+        // 🟢 2. 處理靜止空載封包 (0x70) -> 雙重保險的拔除特徵
+        else if (header == 0x70) {
+            if (isBeyInstalled) { 
+                Serial.println("\n[狀態] 🟡 陀螺已拔除 (收到系統靜止碼 0x70)");
+                isBeyInstalled = false; // connectTask 同樣會處理狀態推播
+            }
+        }
+        // 🔴 3. 處理真實發射轉速封包 (0x71 ~ 0x73) -> 算分引擎
         else if (header >= 0x71 && header <= 0x73) {
             for (int i = 1; i < (int)length - 1; i += 2) {
                 uint16_t val = pData[i] | (pData[i+1] << 8);
                 Physics::addData(val); 
             }
             if (header == 0x73) {
-                if (Physics::calculate()) { UI::readyToDraw = true; }
+                if (Physics::calculate()) { 
+                    UI::readyToDraw = true; 
+                }
             }
         }
     }
@@ -92,7 +118,7 @@ namespace BLE_Manager {
         pBLEScan->setScanCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
-        pBLEScan->setWindow(99); 
+        pBLEScan->setWindow(50); 
     }
 
 void connectTask() {

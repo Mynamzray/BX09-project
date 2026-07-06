@@ -49,6 +49,13 @@ int global_hist_count = 0;
 namespace UI {
     volatile bool readyToDraw = false;
 
+    // 🟢 核心：乾淨的信箱與狀態記憶
+    volatile int requested_ble_state = 1;  
+    static int current_rendered_state = -1; 
+    
+    static uint32_t go_shoot_timer = 0;
+    static bool is_showing_go_shoot = false;
+
     // LVGL 物件指標
     lv_obj_t * scr;
     lv_obj_t * label_status;
@@ -238,20 +245,28 @@ void init() {
         lv_label_set_text(label_battery, LV_SYMBOL_BATTERY_FULL " --%"); // 開機預設顯示
     }
 // 2. 更新藍牙狀態燈 (三段變速版)
-    void updateStatus(int state) {
+// 🟢 專屬渲染器：將指定的數字化為畫面上的顏色與文字
+void updateStatus(int state) {
+        if (state >= 0 && state <= 3) {
+            requested_ble_state = state;
+        }
+    }
+    void renderStatusUI(int state) { 
         if (state == 0) {
             lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
             lv_label_set_text(label_status, "BLE DISCONNECTED");
         } else if (state == 1) {
-            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_AMBER)); // 🟡 黃燈
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_AMBER)); 
             lv_label_set_text(label_status, "WAITING FOR BEY");
         } else if (state == 2) {
-            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN)); // 🟢 綠燈
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN)); 
             lv_label_set_text(label_status, "BEYBLADE READY");
-            } else if (state == 3) {
-            // 🟢 新增的休眠狀態
+        } else if (state == 3) {
             lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREY)); 
             lv_label_set_text(label_status, "SYSTEM PAUSED");
+        } else if (state == 4) { // <-- 補上這段！
+            lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_CYAN)); 
+            lv_label_set_text(label_status, "GO SHOOT !!");
         }
     }
 // 3. 繪製結果
@@ -317,11 +332,34 @@ void init() {
         }
     }
 
-    // 4. 安全檢查
+// 🟢 最終完美狀態機：UI 霸屏與硬體信箱分離
     void handleUpdate() {
         if (readyToDraw) {
             readyToDraw = false; 
             showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount, Physics::SP, Physics::size);
+            
+            // 物理重置信箱
+            requested_ble_state = 1; 
+            
+            // 啟動 2 秒霸屏動畫
+            is_showing_go_shoot = true;
+            go_shoot_timer = millis();
+            
+            renderStatusUI(4);
+            current_rendered_state = 4;
+        }
+
+        if (is_showing_go_shoot) {
+            if (millis() - go_shoot_timer > 2000) {
+                is_showing_go_shoot = false;
+                current_rendered_state = -1; // 強制清空記憶，逼迫讀取信箱
+            }
+        } else {
+            // 平常狀態同步
+            if (current_rendered_state != requested_ble_state) {
+                renderStatusUI(requested_ble_state);
+                current_rendered_state = requested_ble_state;
+            }
         }
     }
 }

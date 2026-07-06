@@ -179,22 +179,42 @@ void lvgl_port_init(void)
   static lv_disp_draw_buf_t disp_buf;
   static lv_disp_drv_t disp_drv;
   lv_init();
+  
   lv_color_t *buf_1 = NULL;
   lv_color_t *buf_2 = NULL;
-  buf_1 = (lv_color_t *)heap_caps_malloc(EXAMPLE_LCD_V_RES * EXAMPLE_LCD_H_RES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-  buf_2 = (lv_color_t *)heap_caps_malloc(EXAMPLE_LCD_V_RES * EXAMPLE_LCD_H_RES * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
-  lv_disp_draw_buf_init(&disp_buf, buf_1, buf_2 , EXAMPLE_LCD_V_RES * EXAMPLE_LCD_H_RES);
+
+  // 🟢 終極修正：將 LVGL 緩衝區縮小為 50 行，並強制放入極速的內部 SRAM
+  uint32_t draw_buf_size = EXAMPLE_LCD_H_RES * 50; 
+  
+  buf_1 = (lv_color_t *)heap_caps_malloc(draw_buf_size * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  buf_2 = (lv_color_t *)heap_caps_malloc(draw_buf_size * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+  
+  // 🛡️ 防呆機制：如果內部 RAM 真的不夠用，才退回使用 PSRAM
+  if (!buf_1 || !buf_2) {
+      ESP_LOGW("LVGL", "Internal RAM is full, falling back to PSRAM!");
+      if(buf_1) free(buf_1);
+      if(buf_2) free(buf_2);
+      buf_1 = (lv_color_t *)heap_caps_malloc(draw_buf_size * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+      buf_2 = (lv_color_t *)heap_caps_malloc(draw_buf_size * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+  }
+
+  // 載入新的、輕量化的 buffer 大小
+  lv_disp_draw_buf_init(&disp_buf, buf_1, buf_2 , draw_buf_size);
+  
   lv_disp_drv_init(&disp_drv);
   disp_drv.draw_buf = &disp_buf;
   disp_drv.hor_res = EXAMPLE_LCD_H_RES;
   disp_drv.ver_res = EXAMPLE_LCD_V_RES;
   disp_drv.flush_cb = example_lvgl_flush_cb;
   disp_drv.user_data = panel_handle;
-  //#ifdef EXAMPLE_Rotate_90
-  disp_drv.sw_rotate = 1; // 🟢 先設為 0 (不旋轉)，通常這樣就是最寬的橫向
+  
+  // 維持你的軟體旋轉設定
+  disp_drv.sw_rotate = 1; 
   disp_drv.rotated = LV_DISP_ROT_90;
-  //#endif
+  
   lv_disp_drv_register(&disp_drv);
+
+  // ... (下方的 timer 和 task 程式碼維持不變) ...
   const esp_timer_create_args_t lvgl_tick_timer_args = 
   {
     .callback = &example_increase_lvgl_tick,
