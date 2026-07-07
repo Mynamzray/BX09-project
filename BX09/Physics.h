@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include "Web_Manager.h" 
 
 // ==========================================
 // [模組 1] 物理運算器 (Physics Engine) - V4 官方 Delta 濾波版
@@ -17,12 +18,14 @@ namespace Physics {
     int historyCount = 0;      
 
     uint16_t SP[32] = {0};
+    uint16_t rawSP[32] = {0}; 
     uint16_t size = 0;
 
     void reset() {
         count = 0;
         memset(rawProf, 0, sizeof(rawProf));
         memset(SP, 0, sizeof(SP)); 
+        memset(rawSP, 0, sizeof(rawSP)); 
         size = 0;                  
     }
 
@@ -36,9 +39,9 @@ namespace Physics {
     bool calculate() {
         uint16_t T[32] = {0};
         uint16_t elapsedTime = 0;
-        uint16_t rawSP[32] = {0}; 
 
         memset(SP, 0, sizeof(SP));
+        memset(rawSP, 0, sizeof(rawSP));
         size = 0;
         memset(T, 0, sizeof(T)); 
         elapsedTime = 0;         
@@ -62,7 +65,6 @@ namespace Physics {
 
         // ==========================================
         // 步驟 2: 原版平滑曲線處理 (保留給 WebBased Chart 畫圖用)
-        // 注意：這裡加入了 (int32_t) 防止 ESP32 算數下溢位變磚！
         // ==========================================
         for (int i = 0; i < size; i++) {
             if (SP[i] > 25000) {
@@ -93,17 +95,14 @@ namespace Physics {
         uint16_t calcSP[32] = {0};
         int calcSize = size;
         
-        // 建立沙盒：使用原始數據來做剔除運算，完全不破壞畫圖用的 SP 與 rawSP
         for(int i = 0; i < size; i++) {
             calcSP[i] = rawSP[i];
         }
 
-        // 開始進行 Outlier Rejection 濾波
         while (calcSize > 0) {
             uint16_t currentPeak = 0;
             int peakIndex = -1;
 
-            // 尋找當前沙盒內的最大值
             for (int i = 0; i < calcSize; i++) {
                 if (calcSP[i] > currentPeak) {
                     currentPeak = calcSP[i];
@@ -111,12 +110,10 @@ namespace Physics {
                 }
             }
 
-            // 防呆：如果找不到或為 0，直接結束
             if (peakIndex == -1 || currentPeak == 0) break;
 
             bool isNoise = false;
             
-            // 邊界與 Delta 2000 判定
             if (calcSize == 1) {
                 trueMax = currentPeak;
                 break;
@@ -132,15 +129,21 @@ namespace Physics {
             }
 
             if (isNoise) {
-                // 這是機械雜訊！將後面的數據往前移來「剔除」這個點
                 for (int i = peakIndex; i < calcSize - 1; i++) {
                     calcSP[i] = calcSP[i + 1];
                 }
                 calcSize--;
             } else {
-                // 找到真實官方極速！鎖定成績並跳出
                 trueMax = currentPeak;
                 break;
+            }
+        }
+
+        // 🟢 新增：找出剔除前的「絕對原始最大峰值 (Raw Peak)」
+        uint16_t rawPeak = 0;
+        for (int i = 0; i < size; i++) {
+            if (rawSP[i] > rawPeak) {
+                rawPeak = rawSP[i];
             }
         }
 
@@ -166,9 +169,11 @@ namespace Physics {
         // 5. CSV 與 Web 網頁串流輸出
         // ==========================================
         if (trueMax > 0) {
+            // 🟢 關鍵修復：把 Web_Manager 廣播加回來！(包含 rawPeak 參數)
+            Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm, rawPeak);
+
             Serial.println("===CSV_START===");
             for(int i = 0; i < size; i++) {
-                // 格式：經過時間(ms), 原始轉速, 過濾轉速, 本次發射最高轉速(已套用 Delta Rule)
                 Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], (int)peak_rpm);
             }
             Serial.println("===CSV_END===");

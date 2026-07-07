@@ -1,6 +1,5 @@
 #include "BLE_Manager.h"
-// #include "UI.h"
-// #include "Physics.h"
+#include "Web_Manager.h" // 🟢 任務一核心：引入 Web_Manager 標頭檔以進行跨模組通訊
 
 namespace UI {
     extern volatile bool readyToDraw;
@@ -12,8 +11,8 @@ namespace Physics {
     void addData(uint16_t val);
     bool calculate();
 }
+
 namespace BLE_Manager {
-    // 變數實際定義區
     NimBLEClient* client = nullptr;
     NimBLEScan* pBLEScan = nullptr;
     NimBLEAddress* targetAddress = nullptr;
@@ -34,7 +33,6 @@ namespace BLE_Manager {
         }
     }
 
-    // 補回開關藍牙邏輯
     void toggleBluetooth() {
         isSystemEnabled = !isSystemEnabled; 
         if (!isSystemEnabled) {
@@ -49,6 +47,9 @@ namespace BLE_Manager {
             if (current_ui_state != last_ui_state) {
                 last_ui_state = current_ui_state;
                 UI::updateStatus(current_ui_state);
+                
+                // 🟢 任務一：手動關閉系統藍牙時，同步重置網頁端的狀態燈
+                Web_Manager::broadcastStatus(isConnected, isBeyInstalled);
             }
         } else {
             Serial.println("📡 [系統] 藍牙雷達重新啟動");
@@ -57,42 +58,33 @@ namespace BLE_Manager {
         }
     }
 
-    // 補回 BX-09 封包解析邏輯與拔除偵測
     void notifyCallback(NimBLERemoteCharacteristic* pChar, uint8_t* pData, size_t length, bool isNotify) {
         if (length == 0) return;
         uint8_t header = pData[0];
 
-        // 🟢 1. 處理系統狀態封包 (0xA0)
         if (header == 0xA0) {
-            // [智慧嗅探器] 印出 A0 封包，方便隨時監控硬體物理狀態
             Serial.print("[BLE 系統狀態攔截] ");
-            for (size_t i = 0; i < length; i++) {
-                Serial.printf("%02X ", pData[i]); 
-            }
+            for (size_t i = 0; i < length; i++) { Serial.printf("%02X ", pData[i]); }
             Serial.println(); 
 
-            // [判斷安裝] -> 物理開關壓下 (0x04)
             if (length >= 4 && pData[3] == 0x04) {
                 Serial.println("\n[狀態] 🟢 陀螺已安裝");
                 Physics::reset();  
-                isBeyInstalled = true; // connectTask 會自動把狀態 2 推給 UI 信箱
+                isBeyInstalled = true; // 狀態改變會由下方的 connectTask 自動捕捉並發送給網頁
             } 
-            // 🟢 [判斷反悔/手動拔除] -> 物理開關彈起 (0x00)
             else if (length >= 4 && pData[3] == 0x00) {
-                if (isBeyInstalled) { // 確保原本是裝著的才觸發
+                if (isBeyInstalled) { 
                     Serial.println("\n[狀態] 🟡 陀螺已手動拔除");
-                    isBeyInstalled = false; // connectTask 會自動把狀態 1 推給 UI 信箱
+                    isBeyInstalled = false; 
                 }
             }
         }
-        // 🟢 2. 處理靜止空載封包 (0x70) -> 雙重保險的拔除特徵
         else if (header == 0x70) {
             if (isBeyInstalled) { 
                 Serial.println("\n[狀態] 🟡 陀螺已拔除 (收到系統靜止碼 0x70)");
-                isBeyInstalled = false; // connectTask 同樣會處理狀態推播
+                isBeyInstalled = false; 
             }
         }
-        // 🔴 3. 處理真實發射轉速封包 (0x71 ~ 0x73) -> 算分引擎
         else if (header >= 0x71 && header <= 0x73) {
             for (int i = 1; i < (int)length - 1; i += 2) {
                 uint16_t val = pData[i] | (pData[i+1] << 8);
@@ -101,6 +93,7 @@ namespace BLE_Manager {
             if (header == 0x73) {
                 if (Physics::calculate()) { 
                     UI::readyToDraw = true; 
+                    // 備註：Physics::calculate 內部在成功後，會主動調用 Web_Manager::broadcastLaunch 送出圖表數據
                 }
             }
         }
@@ -108,20 +101,21 @@ namespace BLE_Manager {
 
     void scanCompleteCB(NimBLEScanResults results) {
         isScanning = false;
-        pBLEScan->clearResults(); // 防記憶體洩漏
+        pBLEScan->clearResults(); 
     }
 
     void init() {
         NimBLEDevice::init("ESP32_BEY_SNIFFER");
         pBLEScan = NimBLEDevice::getScan();
-        // pBLEScan->setAdvertisedDeviceCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setScanCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setActiveScan(true);
+        
+        // 🚨 絕對不動 setWindow(50)，嚴格維持藍牙探測窗口與發射器封包的精準同步！
         pBLEScan->setInterval(100);
-        pBLEScan->setWindow(90); 
+        pBLEScan->setWindow(50); 
     }
 
-void connectTask() {
+    void connectTask() {
         if (!isSystemEnabled) return;
 
         // UI 狀態機切換
@@ -132,6 +126,9 @@ void connectTask() {
         if (current_ui_state != last_ui_state) {
             last_ui_state = current_ui_state;
             UI::updateStatus(current_ui_state);
+            
+            // 🟢 任務一核心：當藍牙狀態發生改變，立刻推播給所有網頁用戶端！
+            Web_Manager::broadcastStatus(isConnected, isBeyInstalled);
         }
 
         if (!isConnected && !doConnect && !isScanning) {
@@ -150,15 +147,12 @@ void connectTask() {
                 isConnected = true;
                 Serial.println(">>> 藍牙連線成功！掛載資料監聽器... <<<");
                 
-                // 1. 取得 Services 容器 (你這裡已經改對了)
                 auto services = client->getServices(true);
                 if (!services.empty()) {
                     for (auto* svc : services) {
-                        
-                        // 2. 取得 Characteristics 容器 (🚨 這次修正這裡！)
-                        auto chars = svc->getCharacteristics(true); // 移除了 auto* 的星號
-                        if (!chars.empty()) {                       // 移除了 if (chars) 改用 .empty()
-                            for (auto* chr : chars) {               // 移除了 *chars 的星號
+                        auto chars = svc->getCharacteristics(true); 
+                        if (!chars.empty()) {                       
+                            for (auto* chr : chars) {               
                                 if (chr->canNotify()) {
                                     chr->subscribe(true, notifyCallback, false);
                                 }
@@ -173,13 +167,16 @@ void connectTask() {
         }
     }
 }
-// === 回調函式具體實作 (綁定到 BLE_Manager 變數) ===
 
+// === 回調函式具體實作 ===
 void ClientCallback::onDisconnect(NimBLEClient* pClient, int reason) {
     BLE_Manager::isConnected = false;
     BLE_Manager::isBeyInstalled = false;
     BLE_Manager::current_ui_state = 0;
     Serial.printf("!!! BX-09 斷開連線 (Reason: %d) ...\n", reason);
+    
+    // 🟢 任務一：斷線時觸發一次廣播，強制將所有已開啟的網頁UI刷回紅色的斷線警告狀態
+    Web_Manager::broadcastStatus(false, false);
 }
 
 void AdvertisedDeviceCallbacks::onResult(const NimBLEAdvertisedDevice* advertisedDevice) {
@@ -189,7 +186,6 @@ void AdvertisedDeviceCallbacks::onResult(const NimBLEAdvertisedDevice* advertise
             NimBLEDevice::getScan()->stop();
             BLE_Manager::isScanning = false;
             
-            // 🚨 修正記憶體洩漏：覆寫前先 delete 舊指標
             if (BLE_Manager::targetAddress != nullptr) {
                 delete BLE_Manager::targetAddress;
             }

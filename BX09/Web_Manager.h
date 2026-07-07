@@ -1,4 +1,3 @@
-// Web_Manager.h
 #ifndef WEB_MANAGER_H
 #define WEB_MANAGER_H
 
@@ -6,14 +5,21 @@
 
 class Web_Manager {
 public:
-    // 初始化 Wi-Fi 熱點與啟動網頁伺服器
-    static void init();
+    // 🟢 新增：用於狀態同步與快取的靜態變數
+    static float last_peak;
+    static float last_avg;
+    static uint16_t last_duration;
 
-    // 處理斷線客戶端的清理 (放在 loop 中執行)
+    // 核心生命週期函數
+    static void init();
     static void handle();
 
-    // 將最新的轉速資料透過 WebSocket 廣播給手機瀏覽器
-    static void broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, uint16_t size, uint16_t peak, float avg);
-    };
+    // 🟢 新增：負責與前端網頁同步硬體狀態的函數
+    static void broadcastStatus(bool bleConnected, bool beyInstalled);
+    static void syncInitialData(uint32_t clientId);
+
+    // 發射數據廣播
+    static void broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, uint16_t size, uint16_t peak, float avg, uint16_t raw_peak);
+};
 
 #endif
