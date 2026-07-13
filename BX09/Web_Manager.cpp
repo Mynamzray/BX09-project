@@ -3,71 +3,171 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
-#include "Web_Assets.h" // 🟢 引入剛剛拆分出來的前端資源
+#include "Web_Assets.h" 
 
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
 DNSServer dnsServer;
 const byte DNS_PORT = 53;
 
-// 靜態狀態快取變數
 float Web_Manager::last_peak = 0;
 float Web_Manager::last_avg = 0;
 uint16_t Web_Manager::last_duration = 0;
 static bool sys_bleConnected = false;
 static bool sys_beyInstalled = false;
 
+// 🟢 記憶體最佳化：8 彈匣、單次 64 點。大幅釋放 SRAM 空間給藍牙！
+#define MAX_HISTORY_SLOTS 8
+#define MAX_CACHE_SIZE 64
+
+struct LaunchRecord {
+    uint32_t shot_id;
+    uint16_t peak;
+    uint16_t raw_peak;
+    float avg;
+    uint16_t size;
+    uint16_t T[MAX_CACHE_SIZE];
+    uint16_t rawSP[MAX_CACHE_SIZE];
+    uint16_t SP[MAX_CACHE_SIZE];
+};
+
+static LaunchRecord launch_history[MAX_HISTORY_SLOTS];
+static uint8_t history_count = 0;
+static uint32_t next_shot_id = 1;
+static uint32_t boot_session_id = 0; 
+
+static volatile bool pendingLaunch = false;
+static volatile uint32_t sync_client_id = 0;
+static int sync_index = -1;
+static unsigned long last_sync_time = 0;
+
 void onEvent(AsyncWebSocket *server, AsyncWebSocketClient *client, AwsEventType type, void *arg, uint8_t *data, size_t len) {
     if(type == WS_EVT_CONNECT) {
-        Serial.printf("WebSocket 用戶端 #%u 已成功連線！推送歷史快取...\n", client->id());
-        // 🟢 任務一：新手機連線時，立刻把目前快取的硬體狀態與最後一次射擊成績塞給它
+        Serial.printf("WebSocket 用戶端 #%u 已連線！觸發離線數據同步...\n", client->id());
         Web_Manager::syncInitialData(client->id());
+        
+        if (history_count > 0) {
+            sync_client_id = client->id(); 
+            sync_index = history_count - 1;
+        }
     }
 }
 
 void Web_Manager::init() {
     Serial.println("===========================================");
-    Serial.println("🟢 啟動專屬 Wi-Fi 入口熱點與 Web 戰情室...");
+    Serial.println("🟢 啟動專屬 Wi-Fi 熱點與 Web 戰情室...");
     
+    // 破解手機 Captive Portal 誤判過濾
+    boot_session_id = (esp_random() % 1000000) + micros();
+
     WiFi.mode(WIFI_AP);
+    
+    // 讀取實體網卡，解決 0000 問題
+    String mac = WiFi.macAddress();
+    mac.replace(":", ""); 
+    String uniqueID = mac.substring(mac.length() - 4); 
+    String apName = "BX09_" + uniqueID; 
+    
+    Serial.println(">>> 開啟專屬熱點: " + apName);
+
     WiFi.softAPConfig(IPAddress(192, 168, 4, 1), IPAddress(192, 168, 4, 1), IPAddress(255, 255, 255, 0));
-    WiFi.softAP("BX09_Telemetry"); 
+    WiFi.softAP(apName.c_str()); 
     dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
 
-    // 🟢 任務二核心：在根路由將拆開的靜態資源在記憶體中動態拼接，組裝成完整網頁
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
         String full_html = String(WEB_HTML_HEAD) + String(WEB_CSS) + String(WEB_HTML_BODY) + String(WEB_JS);
         request->send(200, "text/html", full_html);
     });
-
-    // Captive Portal 攔截機制：將所有系統網路探測流量導向 192.168.4.1 觸發自動彈窗
+    
     server.onNotFound([](AsyncWebServerRequest *request){
-        request->redirect("http://192.168.4.1/");
+        String full_html = String(WEB_HTML_HEAD) + String(WEB_CSS) + String(WEB_HTML_BODY) + String(WEB_JS);
+        request->send(200, "text/html", full_html);
     });
 
     ws.onEvent(onEvent);
     server.addHandler(&ws);
     server.begin();
-    Serial.println("🟢 Captive Portal & Web Server 啟動完成！");
-    Serial.println("===========================================");
 }
 
 void Web_Manager::handle() {
     dnsServer.processNextRequest();
     ws.cleanupClients();
-}
 
-// 🟢 任務一：實作狀態即時廣播函數
+    // 觸發點 1：非阻塞式倒出離線歷史數據
+    if (sync_client_id != 0 && sync_index >= 0) {
+        if (millis() - last_sync_time > 50) {
+            last_sync_time = millis();
+            int i = sync_index;
+            
+            // 預先分配記憶體，組裝完美 JSON
+            String json;
+            json.reserve(2048); 
+            
+            json += "{\"type\":\"launch\",";
+            json += "\"is_history\":true,"; 
+            json += "\"session_id\":" + String(boot_session_id) + ",";
+            json += "\"shot_id\":" + String(launch_history[i].shot_id) + ",";
+            json += "\"peak\":" + String(launch_history[i].peak) + ",";
+            json += "\"raw_peak\":" + String(launch_history[i].raw_peak) + ","; 
+            json += "\"avg\":" + String(launch_history[i].avg) + ",";
+            json += "\"size\":" + String(launch_history[i].size) + ",";
+            
+            json += "\"t\":[";
+            for(int j = 0; j < launch_history[i].size; j++) { json += String(launch_history[i].T[j]); if(j < launch_history[i].size - 1) json += ","; }
+            json += "],\"raw\":[";
+            for(int j = 0; j < launch_history[i].size; j++) { json += String(launch_history[i].rawSP[j]); if(j < launch_history[i].size - 1) json += ","; }
+            json += "],\"filtered\":[";
+            for(int j = 0; j < launch_history[i].size; j++) { json += String(launch_history[i].SP[j]); if(j < launch_history[i].size - 1) json += ","; }
+            json += "]}";
+
+            ws.text(sync_client_id, json);
+            
+            sync_index--;
+            if (sync_index < 0) sync_client_id = 0; 
+        }
+    }
+
+    // 觸發點 2：當下立即的射擊廣播
+    if (pendingLaunch) {
+        pendingLaunch = false;
+        if (ws.count() > 0) {
+            String json;
+            json.reserve(2048);
+            
+            json += "{\"type\":\"launch\",";
+            json += "\"is_history\":false,"; 
+            json += "\"session_id\":" + String(boot_session_id) + ",";
+            json += "\"shot_id\":" + String(launch_history[0].shot_id) + ",";
+            json += "\"peak\":" + String(launch_history[0].peak) + ",";
+            json += "\"raw_peak\":" + String(launch_history[0].raw_peak) + ","; 
+            json += "\"avg\":" + String(launch_history[0].avg) + ",";
+            json += "\"size\":" + String(launch_history[0].size) + ",";
+            
+            json += "\"t\":[";
+            for(int j = 0; j < launch_history[0].size; j++) { json += String(launch_history[0].T[j]); if(j < launch_history[0].size - 1) json += ","; }
+            json += "],\"raw\":[";
+            for(int j = 0; j < launch_history[0].size; j++) { json += String(launch_history[0].rawSP[j]); if(j < launch_history[0].size - 1) json += ","; }
+            json += "],\"filtered\":[";
+            for(int j = 0; j < launch_history[0].size; j++) { json += String(launch_history[0].SP[j]); if(j < launch_history[0].size - 1) json += ","; }
+            json += "]}";
+
+            // 🟢 Debug 追蹤：讓你知道 ESP32 真的有把資料推出去！
+            Serial.println("[Web JSON 推播] 🚀 成功發送最新戰績給網頁！"); 
+            ws.textAll(json);
+        } else {
+            Serial.println("[Web JSON 推播] ⚠️ 當前沒有網頁連線，數據已存入離線快取！");
+        }
+    }
+}
 void Web_Manager::broadcastStatus(bool bleConnected, bool beyInstalled) {
     sys_bleConnected = bleConnected;
     sys_beyInstalled = beyInstalled;
-    if (ws.count() == 0) return; // 沒有網頁連線就跳過，省頻寬
+    if (ws.count() == 0) return;
     
     String json = "{\"type\":\"status\",\"bleConnected\":" + String(bleConnected ? "true" : "false") + ",\"beyInstalled\":" + String(beyInstalled ? "true" : "false") + "}";
     ws.textAll(json);
 }
 
-// 🟢 任務一：實作新客戶端首次接入時的快取數據拉取
 void Web_Manager::syncInitialData(uint32_t clientId) {
     String json = "{\"type\":\"sync\",";
     json += "\"peak\":" + String(last_peak) + ",";
@@ -80,26 +180,26 @@ void Web_Manager::syncInitialData(uint32_t clientId) {
 }
 
 void Web_Manager::broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, uint16_t size, uint16_t peak, float avg, uint16_t raw_peak) {
-    // 射擊時同步更新快取，防範使用者中途刷新網頁數據遺失
+    for (int i = MAX_HISTORY_SLOTS - 1; i > 0; i--) {
+        launch_history[i] = launch_history[i-1];
+    }
+    if (history_count < MAX_HISTORY_SLOTS) history_count++;
+
+    launch_history[0].shot_id = next_shot_id++;
+    launch_history[0].peak = peak;
+    launch_history[0].raw_peak = raw_peak;
+    launch_history[0].avg = avg;
+    launch_history[0].size = (size > MAX_CACHE_SIZE) ? MAX_CACHE_SIZE : size;
+
+    for (int i = 0; i < launch_history[0].size; i++) {
+        launch_history[0].T[i] = T[i];
+        launch_history[0].rawSP[i] = rawSP[i];
+        launch_history[0].SP[i] = SP[i];
+    }
+
     last_peak = peak;
     last_avg = avg;
-    last_duration = size > 0 ? T[size-1] : 0;
-
-    if (ws.count() == 0) return;
-
-    String json = "{";
-    json += "\"type\":\"launch\",";
-    json += "\"peak\":" + String(peak) + ",";
-    json += "\"avg\":" + String(avg) + ",";
-    json += "\"size\":" + String(size) + ",";
+    last_duration = launch_history[0].size > 0 ? launch_history[0].T[launch_history[0].size-1] : 0;
     
-    json += "\"t\":[";
-    for(int i = 0; i < size; i++) { json += String(T[i]); if(i < size - 1) json += ","; }
-    json += "],\"raw\":[";
-    for(int i = 0; i < size; i++) { json += String(rawSP[i]); if(i < size - 1) json += ","; }
-    json += "],\"filtered\":[";
-    for(int i = 0; i < size; i++) { json += String(SP[i]); if(i < size - 1) json += ","; }
-    json += "]}";
-
-    ws.textAll(json);
+    pendingLaunch = true; 
 }
