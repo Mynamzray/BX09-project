@@ -3,7 +3,7 @@
 #include "Web_Manager.h" 
 
 // ==========================================
-// [模組 1] 物理運算器 (Physics Engine) - V4 官方 Delta 濾波版
+// [模組 1] 物理運算器 (Physics Engine) - 山峰後處理濾波版
 // ==========================================
 
 namespace Physics {
@@ -47,7 +47,7 @@ namespace Physics {
         elapsedTime = 0;         
 
         // ==========================================
-        // 1. 基本解碼
+        // 步驟 1: 基本解碼 (完全還原所有原始數據)
         // ==========================================
         for (int i = 0; i < count; i += 1) { 
             auto nRefs = rawProf[i];
@@ -58,88 +58,39 @@ namespace Physics {
 
             elapsedTime += static_cast<uint16_t>(dt);
             T[size] = elapsedTime;
-            SP[size] = sp;
             rawSP[size] = sp; 
             size += 1;
         }
 
+        if (size < 3) {
+            count = 0;
+            memset(rawProf, 0, sizeof(rawProf));
+            return false;
+        }
+
         // ==========================================
-        // 步驟 2: 原版平滑曲線處理 (保留給 WebBased Chart 畫圖用)
+        // 步驟 2: 尋找山峰 (Peak) 與次高點 (Second Best)
         // ==========================================
+        int peak_idx = -1;
+        uint16_t peak_val = 0;
+        uint16_t second_best = 0;
+
         for (int i = 0; i < size; i++) {
-            if (SP[i] > 25000) {
-                SP[i] = 0; 
-            }
-        }
-
-        for (int pass = 0; pass < 2; pass++) { 
-            for (int i = 1; i < size - 1; i++) {
-                if (SP[i] == 0 || abs((int32_t)SP[i] - (int32_t)SP[i-1]) > 6000 || abs((int32_t)SP[i] - (int32_t)SP[i+1]) > 6000) { 
-                    uint16_t interpolated = (SP[i-1] + SP[i+1]) / 2;
-                    if (interpolated > 0 && interpolated < 25000) {
-                        SP[i] = interpolated;
-                    }
-                }
-            }
-        }
-
-        if (size > 1) {
-            if (abs((int32_t)SP[0] - (int32_t)SP[1]) > 6000) SP[0] = SP[1];
-            if (abs((int32_t)SP[size-1] - (int32_t)SP[size-2]) > 6000) SP[size-1] = SP[size-2];
-        }
-
-        // ==========================================
-        // 步驟 3: [全新核心] 官方 2000 RPM Delta Rule (精準擷取 Peak)
-        // ==========================================
-        uint16_t trueMax = 0;
-        uint16_t calcSP[32] = {0};
-        int calcSize = size;
-        
-        for(int i = 0; i < size; i++) {
-            calcSP[i] = rawSP[i];
-        }
-
-        while (calcSize > 0) {
-            uint16_t currentPeak = 0;
-            int peakIndex = -1;
-
-            for (int i = 0; i < calcSize; i++) {
-                if (calcSP[i] > currentPeak) {
-                    currentPeak = calcSP[i];
-                    peakIndex = i;
-                }
-            }
-
-            if (peakIndex == -1 || currentPeak == 0) break;
-
-            bool isNoise = false;
+            uint16_t current = rawSP[i];
             
-            if (calcSize == 1) {
-                trueMax = currentPeak;
-                break;
-            } else if (peakIndex == 0) {
-                if (abs((int32_t)currentPeak - (int32_t)calcSP[1]) > 2000) isNoise = true;
-            } else if (peakIndex == calcSize - 1) {
-                if (abs((int32_t)currentPeak - (int32_t)calcSP[calcSize - 2]) > 2000) isNoise = true;
-            } else {
-                if (abs((int32_t)currentPeak - (int32_t)calcSP[peakIndex - 1]) > 2000 && 
-                    abs((int32_t)currentPeak - (int32_t)calcSP[peakIndex + 1]) > 2000) {
-                    isNoise = true;
-                }
-            }
+            // 基礎極限防護：排除大於 18000 的完全物理不可能雜訊
+            if (current > 18000) continue; 
 
-            if (isNoise) {
-                for (int i = peakIndex; i < calcSize - 1; i++) {
-                    calcSP[i] = calcSP[i + 1];
-                }
-                calcSize--;
-            } else {
-                trueMax = currentPeak;
-                break;
+            if (current > peak_val) {
+                second_best = peak_val;
+                peak_val = current;
+                peak_idx = i;
+            } else if (current > second_best) {
+                second_best = current;
             }
         }
 
-        // 🟢 新增：找出剔除前的「絕對原始最大峰值 (Raw Peak)」
+        // 找出剔除前的「絕對原始最大峰值 (Raw Peak)」
         uint16_t rawPeak = 0;
         for (int i = 0; i < size; i++) {
             if (rawSP[i] > rawPeak) {
@@ -147,29 +98,75 @@ namespace Physics {
             }
         }
 
+        // 先把所有原始數據複製給 SP，準備進行山峰理髮
+        for(int i = 0; i < size; i++) {
+            SP[i] = rawSP[i];
+        }
+
         // ==========================================
-        // 4. 儲存結果並釋放記憶體
+        // 步驟 3: 實作山峰後處理 2000 Delta 規則
+        // ==========================================
+        if (peak_idx > 0 && peak_idx < size - 1) {
+            uint16_t prev_val = rawSP[peak_idx - 1];
+            uint16_t next_val = rawSP[peak_idx + 1];
+
+            // 判斷是否為孤立的「避雷針」尖峰 (確保減法不會變成負數而造成溢位)
+            bool is_left_steep  = (peak_val > prev_val) && ((peak_val - prev_val) > 2000);
+            bool is_right_steep = (peak_val > next_val) && ((peak_val - next_val) > 2000);
+            bool is_way_higher  = (peak_val > second_best) && ((peak_val - second_best) > 2000);
+
+            if ((is_left_steep && is_right_steep) || is_way_higher) {
+                Serial.printf("⛰️ [山峰濾波器] 偵測到孤立雜訊尖峰: %d RPM (索引: %d)\n", peak_val, peak_idx);
+                Serial.printf("   👉 前點: %d | 後點: %d | 次高: %d\n", prev_val, next_val, second_best);
+                Serial.printf("   👉 處置：溫柔削平，將最高值修正為次高值: %d RPM\n", second_best);
+                
+                // 溫柔削平！將雜訊點替換為次高點
+                SP[peak_idx] = second_best;
+                peak_val = second_best; // 修正結算峰值
+            }
+        } else if (peak_idx == 0 || peak_idx == size - 1) {
+            // 如果最高點剛好在最邊緣 (發射瞬間或結束瞬間)
+            bool is_way_higher = (peak_val > second_best) && ((peak_val - second_best) > 2000);
+            if (is_way_higher) {
+                Serial.printf("⛰️ [山峰濾波器] 偵測到邊緣雜訊尖峰: %d RPM (索引: %d)\n", peak_val, peak_idx);
+                Serial.printf("   👉 處置：溫柔削平，將最高值修正為次高值: %d RPM\n", second_best);
+                
+                SP[peak_idx] = second_best;
+                peak_val = second_best;
+            }
+        }
+
+        // 把殘留的大於 20000 的物理界外雜訊也削平，確保圖表美觀
+        for(int i = 0; i < size; i++) {
+             if (SP[i] > 20000) SP[i] = peak_val;
+        }
+
+        uint16_t trueMax = peak_val;
+
+        // ==========================================
+        // 步驟 4: 儲存結果並釋放記憶體
         // ==========================================
         if (trueMax > 0) {
             peak_rpm = trueMax;
             float sum_sp = 0;
             for (int i = 0; i < size; i++) sum_sp += SP[i];
             avg_rpm = size > 0 ? (sum_sp / size) : 0;
+            
             for (int i = 7; i > 0; i--) {
                 history[i] = history[i-1];
             }
             history[0] = peak_rpm; 
             if (historyCount < 8) historyCount++;
+            
             if (peak_rpm > allTimePeak) {
                 allTimePeak = peak_rpm;
             }
         }
         
         // ==========================================
-        // 5. CSV 與 Web 網頁串流輸出
+        // 步驟 5: CSV 與 Web 網頁串流輸出
         // ==========================================
         if (trueMax > 0) {
-            // 🟢 關鍵修復：把 Web_Manager 廣播加回來！(包含 rawPeak 參數)
             Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm, rawPeak);
 
             Serial.println("===CSV_START===");
