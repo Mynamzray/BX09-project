@@ -1,0 +1,19 @@
+96719c2 | 2026-07-13 | perf(telemetry): optimize BLE data rate & implement post-processing peak filter
+477a8a1 | 2026-07-13 | updated webdashboard
+c2121f4 | 2026-07-07 | feat: upgrade to 100% offline telemetry with 20-slot ESP cache & 100-shot mobile persistent storage
+1ebb36a | 2026-07-06 | fixed bluetooth timing ensuring data show up
+b8c87bc | 2026-07-06 | chore: save current working progress before branching
+779e775 | 2026-07-06 | fix: resolve NimBLE 2.x API migration issues and linker errors in UI/Physics modules
+49c2109 | 2026-07-05 | feat: 🚀 BX-09 Dashboard V3.3 - Historical Playback Edition & Physics Data Validation
+1cedd49 | 2026-07-04 | feat: 🚀 Launch BX-09 Telemetry Dashboard V3.1 (CustomTkinter + Multi-threading) & Optimize Physics Core
+15b8e48 | 2026-07-03 | feat: 實裝動態門檻演算法、Python 實時數據儀表板，並升級 LVGL 轉速滾動動畫
+ca099fd | 2026-06-30 | Refactor: Modularize project into Physics, UI, BLE, Button, and Battery components; implement non-blocking button control and battery monitoring
+22d2e45 | 2026-06-29 | Fix: Resolve BLE blocking deadlock, fix dual-core cache sync (volatile), and upgrade UI to 3-state dynamic indicators
+52f40e0 | 2026-06-25 | Hardware: Migrate to ESP32-S3-LCD-3.16, add persistence storage, and Sempai's filtering algorithm
+7efda52 | 2026-06-18 | Refactor: Upgrade layout and memory map for 3.16 inch screen
+53f4afc | 2026-05-20 | Refactor: Optimize UI rendering, fix variable shadowing and filter dense chart markers
+7c70d83 | 2026-05-19 | Refactor: Implement robust noise filtering and anti-glitch logic for BX-09 Physics module
+7a62275 | 2026-05-18 | added record hight and recent 8 shots
+4c51147 | 2026-05-18 | 完成 BX-09 基礎模組化與電量偵測
+dc20aa7 | 2026-05-18 | Initial commit
+68f897a | 2026-05-18 | 完成 BX-09 基礎模組化與電量偵測

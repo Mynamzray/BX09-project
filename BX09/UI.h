@@ -76,38 +76,46 @@ namespace UI {
         // 把漸變中的數字格式化並顯示出來
         lv_label_set_text_fmt(label, "%d RPM", v); 
     }
+void updateBattery(int percentage, bool isCharging) {
+    if (!label_battery) return;
 
-// 🟢 新增：更新電池圖示與百分比
- // 🟢 修正版：更新電池圖示與百分比 (支援充電狀態)
-    void updateBattery(int percentage, bool isCharging) {
-        if (!label_battery) return;
-
-        const char* symbol;
-        
-        if (isCharging) {
-            symbol = LV_SYMBOL_CHARGE; // ⚡ 顯示 LVGL 內建閃電符號
-            lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_GREEN), 0); // 充電時變綠色
+    const char* symbol;
+    
+    // 1. 決定圖示與顏色
+    if (isCharging) {
+        symbol = LV_SYMBOL_CHARGE; // ⚡ 顯示 LVGL 內建閃電符號
+        lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_GREEN), 0); // 充電時變綠色
+    } else {
+        if (percentage >= 80) {
+            symbol = LV_SYMBOL_BATTERY_FULL;
+        } else if (percentage >= 60) {
+            symbol = LV_SYMBOL_BATTERY_3;
+        } else if (percentage >= 40) {
+            symbol = LV_SYMBOL_BATTERY_2;
+        } else if (percentage >= 20) {
+            symbol = LV_SYMBOL_BATTERY_1;
         } else {
-            if (percentage >= 80) {
-                symbol = LV_SYMBOL_BATTERY_FULL;
-            } else if (percentage >= 60) {
-                symbol = LV_SYMBOL_BATTERY_3;
-            } else if (percentage >= 40) {
-                symbol = LV_SYMBOL_BATTERY_2;
-            } else if (percentage >= 20) {
-                symbol = LV_SYMBOL_BATTERY_1;
-            } else {
-                symbol = LV_SYMBOL_BATTERY_EMPTY;
-            }
-            
-            // 低電量警告
-            if (percentage <= 20) {
-                lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_RED), 0);
-            } else {
-                lv_obj_set_style_text_color(label_battery, lv_color_white(), 0);
-            }
+            symbol = LV_SYMBOL_BATTERY_EMPTY;
+        }
+        
+        // 低電量警告
+        if (percentage <= 20) {
+            lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_RED), 0);
+        } else {
+            lv_obj_set_style_text_color(label_battery, lv_color_white(), 0);
         }
     }
+    
+    // ==========================================
+    // 🟢 修正關鍵：把算好的圖示更新到畫面上！
+    // ==========================================
+    
+    // 【方案 A】如果你只想顯示純電池圖示：
+    // lv_label_set_text(label_battery, symbol);
+    
+    // 【方案 B】(推薦) 如果你想同時顯示「數字 + 圖示」，例如 "95% 🔋"：
+    lv_label_set_text_fmt(label_battery, "%d%% %s", percentage, symbol);
+}
 // 🟢 假設這是你用來更新轉速的函式，請把 label_current_rpm 換成你實際的標籤變數名稱
     void updateCurrentRPM(int target_rpm) {
         if (!label_current_rpm) return;

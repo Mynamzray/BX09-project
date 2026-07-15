@@ -1,9 +1,8 @@
 #pragma once
 #include <Arduino.h>
-#include "Web_Manager.h" 
 
 // ==========================================
-// [模組 1] 物理運算器 (Physics Engine) - 山峰後處理濾波版
+// [模組 1] 物理運算器 (Physics Engine) - V5.0 最終版 (物理錨點慣性濾波器)
 // ==========================================
 
 namespace Physics {
@@ -47,7 +46,7 @@ namespace Physics {
         elapsedTime = 0;         
 
         // ==========================================
-        // 步驟 1: 基本解碼 (完全還原所有原始數據)
+        // 1. 基本解碼 (Raw Decoding)
         // ==========================================
         for (int i = 0; i < count; i += 1) { 
             auto nRefs = rawProf[i];
@@ -62,95 +61,75 @@ namespace Physics {
             size += 1;
         }
 
-        if (size < 3) {
-            count = 0;
-            memset(rawProf, 0, sizeof(rawProf));
+        if (size == 0) {
+            reset();
             return false;
         }
 
         // ==========================================
-        // 步驟 2: 尋找山峰 (Peak) 與次高點 (Second Best)
+        // 2. 物理錨點慣性濾波器 (Stateful Physics Anchor Filter)
         // ==========================================
-        int peak_idx = -1;
-        uint16_t peak_val = 0;
-        uint16_t second_best = 0;
-
-        for (int i = 0; i < size; i++) {
-            uint16_t current = rawSP[i];
-            
-            // 基礎極限防護：排除大於 18000 的完全物理不可能雜訊
-            if (current > 18000) continue; 
-
-            if (current > peak_val) {
-                second_best = peak_val;
-                peak_val = current;
-                peak_idx = i;
-            } else if (current > second_best) {
-                second_best = current;
-            }
+        uint16_t trueMax = 0;
+        
+        // A. 尋找第一個合理的起點 (過濾掉一開局的極端硬體錯亂)
+        int start_idx = 0;
+        while (start_idx < size && rawSP[start_idx] > 15000) {
+            SP[start_idx] = 0; // 抹平無效的開局點
+            start_idx++;
         }
 
-        // 找出剔除前的「絕對原始最大峰值 (Raw Peak)」
-        uint16_t rawPeak = 0;
-        for (int i = 0; i < size; i++) {
-            if (rawSP[i] > rawPeak) {
-                rawPeak = rawSP[i];
-            }
-        }
+        // 防呆：如果整組數據都是破表雜訊
+        if (start_idx >= size) {
+            trueMax = rawSP[0];
+        } else {
+            // B. 初始化錨點 (Anchor)
+            uint16_t last_valid_rpm = rawSP[start_idx];
+            trueMax = last_valid_rpm;
+            SP[start_idx] = last_valid_rpm;
 
-        // 先把所有原始數據複製給 SP，準備進行山峰理髮
-        for(int i = 0; i < size; i++) {
-            SP[i] = rawSP[i];
-        }
-
-        // ==========================================
-        // 步驟 3: 實作山峰後處理 2000 Delta 規則
-        // ==========================================
-        if (peak_idx > 0 && peak_idx < size - 1) {
-            uint16_t prev_val = rawSP[peak_idx - 1];
-            uint16_t next_val = rawSP[peak_idx + 1];
-
-            // 判斷是否為孤立的「避雷針」尖峰 (確保減法不會變成負數而造成溢位)
-            bool is_left_steep  = (peak_val > prev_val) && ((peak_val - prev_val) > 2000);
-            bool is_right_steep = (peak_val > next_val) && ((peak_val - next_val) > 2000);
-            bool is_way_higher  = (peak_val > second_best) && ((peak_val - second_best) > 2000);
-
-            if ((is_left_steep && is_right_steep) || is_way_higher) {
-                Serial.printf("⛰️ [山峰濾波器] 偵測到孤立雜訊尖峰: %d RPM (索引: %d)\n", peak_val, peak_idx);
-                Serial.printf("   👉 前點: %d | 後點: %d | 次高: %d\n", prev_val, next_val, second_best);
-                Serial.printf("   👉 處置：溫柔削平，將最高值修正為次高值: %d RPM\n", second_best);
+            // C. 順序掃描，拒絕不合理的物理暴衝
+            for (int i = start_idx + 1; i < size; i++) {
+                uint16_t curr_rpm = rawSP[i];
                 
-                // 溫柔削平！將雜訊點替換為次高點
-                SP[peak_idx] = second_best;
-                peak_val = second_best; // 修正結算峰值
-            }
-        } else if (peak_idx == 0 || peak_idx == size - 1) {
-            // 如果最高點剛好在最邊緣 (發射瞬間或結束瞬間)
-            bool is_way_higher = (peak_val > second_best) && ((peak_val - second_best) > 2000);
-            if (is_way_higher) {
-                Serial.printf("⛰️ [山峰濾波器] 偵測到邊緣雜訊尖峰: %d RPM (索引: %d)\n", peak_val, peak_idx);
-                Serial.printf("   👉 處置：溫柔削平，將最高值修正為次高值: %d RPM\n", second_best);
+                // 強制轉型為 int32_t 防止 C++ uint16_t 下溢位 (Underflow)
+                int32_t jump = (int32_t)curr_rpm - (int32_t)last_valid_rpm;
                 
-                SP[peak_idx] = second_best;
-                peak_val = second_best;
+                // 🚨 物理極限門檻：
+                // 1. 單次加速超過 +2500 RPM
+                // 2. 單次減速超過 -4000 RPM
+                // 3. 絕對值突破天花板 15000 RPM
+                if (jump > 2000 || jump < -4000 || curr_rpm > 18000) {
+                    // 拒絕此點！Anchor 留在原地不更新。
+                    // 為了讓 WebUI 畫出來的圖表平滑，將這個雜訊點削平到與 Anchor 齊高
+                    SP[i] = last_valid_rpm; 
+                } else {
+                    // 此點符合真實物理慣性！
+                    last_valid_rpm = curr_rpm; // 更新 Anchor
+                    SP[i] = curr_rpm;          // 允許寫入顯示陣列
+                    
+                    // 挑戰最高分
+                    if (curr_rpm > trueMax) {
+                        trueMax = curr_rpm;
+                    }
+                }
             }
         }
-
-        // 把殘留的大於 20000 的物理界外雜訊也削平，確保圖表美觀
-        for(int i = 0; i < size; i++) {
-             if (SP[i] > 20000) SP[i] = peak_val;
-        }
-
-        uint16_t trueMax = peak_val;
 
         // ==========================================
-        // 步驟 4: 儲存結果並釋放記憶體
+        // 3. 儲存結果與更新歷史狀態
         // ==========================================
         if (trueMax > 0) {
             peak_rpm = trueMax;
+            
             float sum_sp = 0;
-            for (int i = 0; i < size; i++) sum_sp += SP[i];
-            avg_rpm = size > 0 ? (sum_sp / size) : 0;
+            int valid_points = 0;
+            for (int i = 0; i < size; i++) {
+                if (SP[i] > 0) {
+                    sum_sp += SP[i];
+                    valid_points++;
+                }
+            }
+            avg_rpm = valid_points > 0 ? (sum_sp / valid_points) : 0;
             
             for (int i = 7; i > 0; i--) {
                 history[i] = history[i-1];
@@ -164,13 +143,12 @@ namespace Physics {
         }
         
         // ==========================================
-        // 步驟 5: CSV 與 Web 網頁串流輸出
+        // 4. 輸出乾淨的 CSV 資料流
         // ==========================================
         if (trueMax > 0) {
-            Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm, rawPeak);
-
             Serial.println("===CSV_START===");
             for(int i = 0; i < size; i++) {
+                // 輸出格式：時間, 原始轉速(帶雜訊), 過濾轉速(已削平), 最終結算峰值
                 Serial.printf("%d,%d,%d,%d\n", T[i], rawSP[i], SP[i], (int)peak_rpm);
             }
             Serial.println("===CSV_END===");
