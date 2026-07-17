@@ -16,7 +16,7 @@ public:
 
     // 🟢 新增：負責與前端網頁同步硬體狀態的函數
     static void broadcastStatus(bool bleConnected, bool beyInstalled);
-    static void broadcastBattery(int percentage, bool isCharging);
+    static void broadcastBattery(int percentage, float voltage, bool isCharging);
     static void syncInitialData(uint32_t clientId);
 
     // 發射數據廣播

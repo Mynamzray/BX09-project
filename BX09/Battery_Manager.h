@@ -47,12 +47,14 @@ namespace Battery_Manager {
             }
             avg_mV /= 10;
 
-            // 🟢 修正 1：改回 4050mV！抵銷 ESP32 巨大耗電量造成的物理壓降 (Voltage Sag)
-            int currentPercentage = map(avg_mV, 3200, 4050, 0, 100);
+            // 🟢 蘋果式 (Apple-style) 電量映射：隱藏物理壓降 (Voltage Sag)
+            // 將 100% 門檻從 4050 降至 3850mV，超過 3850 全部視為 100%
+            // 這樣拔除 USB 時就算掉到 3.8V~3.9V，仍能維持滿電視覺，消除電量焦慮
+            int currentPercentage = map(avg_mV, 3200, 3700, 0, 100);
             if (currentPercentage > 100) currentPercentage = 100;
             if (currentPercentage < 0) currentPercentage = 0;
 
-            // 🟢 修正 2：更穩定的軟體充電偵測 (避免 84, 87, 85 之間來回閃爍)
+            // 🟢 更穩定的軟體充電偵測 (避免 84, 87, 85 之間來回閃爍)
             if (lastPercentage == -1) {
                 lastPercentage = currentPercentage; 
             } else {
@@ -74,25 +76,25 @@ namespace Battery_Manager {
                 }
             }
 
-            // 🟢 修正 3：強制滿電防線。只要插著 USB 電壓頂到 4050 以上，死鎖在 100%
-            if (avg_mV >= 4050) {
+            // 🟢 強制滿電防線更新：頂到 3850mV 以上死鎖 100%
+            if (avg_mV >= 3850) {
                 lastPercentage = 100;
             }
 
             // 推送給硬體小螢幕
             UI::updateBattery(lastPercentage, isCharging);
-            
+
             // ==========================================
             // 6. 網頁儀表板推播 (Web Dashboard Export via WebSocket)
             // ==========================================
             if (lastPercentage != webReportedPercentage || isCharging != webReportedCharging) {
                 webReportedPercentage = lastPercentage;
                 webReportedCharging = isCharging;
+                float voltage = avg_mV / 1000.0;
 
-                // 🟢 呼叫我們剛剛在 Web_Manager 新增的廣播功能！
-                Web_Manager::broadcastBattery(lastPercentage, isCharging);
+
+                Web_Manager::broadcastBattery(lastPercentage, voltage, isCharging);
                 
-                // 留個 Log 方便你除錯
                 Serial.printf("🌐 [Web 推播] 電池狀態更新 -> %d%%, 充電中: %s\n", lastPercentage, isCharging ? "YES" : "NO");
             }
         }

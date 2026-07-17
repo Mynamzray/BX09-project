@@ -503,6 +503,12 @@ const char WEB_JS[] PROGMEM = R"rawliteral(
                     else if (data.type === "launch") handleNewLaunch(data);
                     else if (data.type === "status") handleStatus(data);
                     else if (data.type === "sync") handleSync(data);
+                    // 🟢 新增：攔截電池封包，並以漂亮的格式印在終端機上！
+                    else if (data.type === "battery") {
+                        let icon = data.isCharging ? '⚡' : '🔋';
+                        let color = data.percentage <= 20 ? 'err' : (data.percentage <= 50 ? 'warn' : 'info');
+                        sysLog(`${icon} [電源狀態] 電量: ${data.percentage}% | 電壓: ${data.voltage}V`, color);
+                    }
                 } catch (err) {}
             };
         }

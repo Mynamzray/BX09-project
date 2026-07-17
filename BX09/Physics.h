@@ -1,6 +1,6 @@
 #pragma once
 #include <Arduino.h>
-
+#include "Web_Manager.h"
 // ==========================================
 // [模組 1] 物理運算器 (Physics Engine) - V5.0 最終版 (物理錨點慣性濾波器)
 // ==========================================
@@ -141,11 +141,18 @@ namespace Physics {
                 allTimePeak = peak_rpm;
             }
         }
-        
+                // 🟢 新增補回：找出絕對原始最大峰值 (Raw Peak)，準備傳給網頁
+        uint16_t rawPeak = 0;
+        for (int i = 0; i < size; i++) {
+            if (rawSP[i] > rawPeak) {
+                rawPeak = rawSP[i];
+            }
+        }
         // ==========================================
         // 4. 輸出乾淨的 CSV 資料流
         // ==========================================
         if (trueMax > 0) {
+                        Web_Manager::broadcastLaunch(T, rawSP, SP, size, trueMax, avg_rpm, rawPeak);
             Serial.println("===CSV_START===");
             for(int i = 0; i < size; i++) {
                 // 輸出格式：時間, 原始轉速(帶雜訊), 過濾轉速(已削平), 最終結算峰值

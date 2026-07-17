@@ -204,11 +204,10 @@ void Web_Manager::broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, ui
     pendingLaunch = true; 
 }
 // 在 Web_Manager.cpp 的最底下加入這個函式
-void Web_Manager::broadcastBattery(int percentage, bool isCharging) {
+void Web_Manager::broadcastBattery(int percentage, float voltage, bool isCharging) {
     if (ws.count() == 0) return;
     
-    // 組裝 JSON 發送給 Web Dashboard
-    String json = "{\"type\":\"battery\",\"percentage\":" + String(percentage) + ",\"isCharging\":" + String(isCharging ? "true" : "false") + "}";
+    // 組裝 JSON 發送給 Web Dashboard，加入 voltage
+    String json = "{\"type\":\"battery\",\"percentage\":" + String(percentage) + ",\"voltage\":" + String(voltage, 2) + ",\"isCharging\":" + String(isCharging ? "true" : "false") + "}";
     ws.textAll(json);
-    Serial.println("🌐 [Web 推播] 電池狀態已發送: " + json);
 }
