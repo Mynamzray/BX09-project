@@ -115,8 +115,15 @@ const char WEB_HTML_BODY[] PROGMEM = R"rawliteral(
                 <span class="card-title" id="launchStateTitle">SYSTEM STATUS</span>
                 <span class="card-value" id="launchStateVal" style="font-size: 1.1rem; color: var(--red);">NO BLUETOOTH CONNECTION</span>
             </div>
+            <!-- 🟢 新增：獨立的官方分數專屬卡片 -->
+            <div class="card" style="box-shadow: 0 0 15px rgba(245,158,11,0.1); border-color: rgba(245,158,11,0.3);">
+                <div class="tag-tr tag-amber">OFFICIAL</div>
+                <span class="card-title text-amber">BBP OFFICIAL SP</span>
+                <span class="card-value text-amber" id="origSpVal">0</span>
+                <span class="card-desc">官方晶片結算成績</span>
+            </div>
             <div class="card" style="box-shadow: 0 0 15px rgba(6,182,212,0.1); border-color: rgba(6,182,212,0.3);">
-                <div class="tag-tr tag-cyan">PEAK</div>
+                <div class="tag-tr tag-cyan">ENGINE</div>
                 <div id="pbBadge" class="pb-badge">🏆 NEW PERSONAL BEST!</div>
                 <span class="card-title text-cyan">PEAK RPM</span>
                 <span class="card-value text-cyan" id="peakVal">0</span>
@@ -503,6 +510,15 @@ const char WEB_JS[] PROGMEM = R"rawliteral(
                     else if (data.type === "launch") handleNewLaunch(data);
                     else if (data.type === "status") handleStatus(data);
                     else if (data.type === "sync") handleSync(data);
+                    // 🟢 新增：攔截官方分數資料，更新到儀表板，並將歷史陣列展開到終端機
+                    else if (data.type === "official_data") {
+                        sysLog(`🏆 [官方同步] 獲取官方最終成績: ${data.origSP} RPM`, 'amber');
+                        updateOdometer('origSpVal', data.origSP);
+                        
+                        let histStr = data.history.join(' RPM, ');
+                        if(data.history.length > 0) histStr += " RPM";
+                        sysLog(`📜 [官方歷史] 最近 ${data.history.length} 筆紀錄: [${histStr}]`, 'info');
+                    }
                     // 🟢 新增：攔截電池封包，並以漂亮的格式印在終端機上！
                     else if (data.type === "battery") {
                         let icon = data.isCharging ? '⚡' : '🔋';

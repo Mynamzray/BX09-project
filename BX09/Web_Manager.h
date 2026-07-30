@@ -21,6 +21,7 @@ public:
 
     // 發射數據廣播
     static void broadcastLaunch(uint16_t* T, uint16_t* rawSP, uint16_t* SP, uint16_t size, uint16_t peak, float avg, uint16_t raw_peak);
+    static void broadcastOfficialHistory(uint16_t origSP, uint16_t* history, uint8_t count);
 };
 
 #endif

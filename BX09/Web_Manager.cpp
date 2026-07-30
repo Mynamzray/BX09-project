@@ -211,3 +211,19 @@ void Web_Manager::broadcastBattery(int percentage, float voltage, bool isChargin
     String json = "{\"type\":\"battery\",\"percentage\":" + String(percentage) + ",\"voltage\":" + String(voltage, 2) + ",\"isCharging\":" + String(isCharging ? "true" : "false") + "}";
     ws.textAll(json);
 }
+void Web_Manager::broadcastOfficialHistory(uint16_t origSP, uint16_t* history, uint8_t count) {
+    if (ws.count() == 0) return;
+    
+    String json;
+    json.reserve(256);
+    json += "{\"type\":\"official_data\",";
+    json += "\"origSP\":" + String(origSP) + ",";
+    json += "\"history\":[";
+    for (int i = 0; i < count; i++) {
+        json += String(history[i]);
+        if (i < count - 1) json += ",";
+    }
+    json += "]}";
+    
+    ws.textAll(json);
+}
