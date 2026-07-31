@@ -5,10 +5,12 @@
 #include "user_config.h"
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
-#include "Physics.h"
 
 namespace BLE_Manager {
     void toggleBluetooth();
+    // 🟢 引入 BLE 模組的轉速快取，準備在主執行緒繪圖
+    extern uint16_t liveCurveBuffer[32];
+    extern int liveCurveCount;
 }
 
 // ==========================================
@@ -17,12 +19,10 @@ namespace BLE_Manager {
 #ifdef __cplusplus
 extern "C" {
 #endif
-    // 宣告 LVGL 字體結構
     #ifndef LV_FONT_DECLARE
         #define LV_FONT_DECLARE(font_name) extern const lv_font_t font_name;
     #endif
 
-    // 強制把 24, 36, 48 號字體的點陣資料射進編譯器
     LV_FONT_DECLARE(lv_font_montserrat_24)
     LV_FONT_DECLARE(lv_font_montserrat_36)
     LV_FONT_DECLARE(lv_font_montserrat_48)
@@ -30,7 +30,6 @@ extern "C" {
 }
 #endif
 
-// 將原本宣告在全域的記憶庫與變數搬過來
 Preferences prefs;
 uint16_t global_all_time_best = 0; 
 uint16_t global_history[8] = {0};
@@ -42,7 +41,6 @@ int global_hist_count = 0;
 namespace UI {
     volatile bool readyToDraw = false;
 
-    // 🟢 核心：乾淨的信箱與狀態記憶
     volatile int requested_ble_state = 1;  
     static int current_rendered_state = -1; 
     
@@ -71,22 +69,15 @@ namespace UI {
         if (!label_battery) return;
 
         const char* symbol;
-        
         if (isCharging) {
             symbol = LV_SYMBOL_CHARGE; 
             lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_GREEN), 0); 
         } else {
-            if (percentage >= 80) {
-                symbol = LV_SYMBOL_BATTERY_FULL;
-            } else if (percentage >= 60) {
-                symbol = LV_SYMBOL_BATTERY_3;
-            } else if (percentage >= 40) {
-                symbol = LV_SYMBOL_BATTERY_2;
-            } else if (percentage >= 20) {
-                symbol = LV_SYMBOL_BATTERY_1;
-            } else {
-                symbol = LV_SYMBOL_BATTERY_EMPTY;
-            }
+            if (percentage >= 80) symbol = LV_SYMBOL_BATTERY_FULL;
+            else if (percentage >= 60) symbol = LV_SYMBOL_BATTERY_3;
+            else if (percentage >= 40) symbol = LV_SYMBOL_BATTERY_2;
+            else if (percentage >= 20) symbol = LV_SYMBOL_BATTERY_1;
+            else symbol = LV_SYMBOL_BATTERY_EMPTY;
             
             if (percentage <= 20) {
                 lv_obj_set_style_text_color(label_battery, lv_palette_main(LV_PALETTE_RED), 0);
@@ -95,8 +86,6 @@ namespace UI {
             }
         }
         
-        // 🟢 救命修正：先用 Arduino String 將小數點轉成文字，再以字串 (%s) 餵給 LVGL
-        // 這樣就能完美避開 LVGL 不支援浮點數 (%f) 的致命崩潰！
         String vStr = String(voltage, 1);
         lv_label_set_text_fmt(label_battery, "%d%% (%sV) %s", percentage, vStr.c_str(), symbol);
     } 
@@ -116,6 +105,28 @@ namespace UI {
 
         current_displayed_rpm = target_rpm;
     }    
+
+    // 🟢 輕量化即時轉速曲線繪製器
+    void updateChartCurve(uint16_t* turnData, int turnCount) {
+        if (!chart || !chart_series || turnCount <= 0) return;
+
+        uint16_t maxRpmInChart = 0;
+        for (int i = 0; i < turnCount; i++) {
+            if (turnData[i] > maxRpmInChart && turnData[i] < 18000) {
+                maxRpmInChart = turnData[i];
+            }
+        }
+        maxRpmInChart = (uint16_t)(maxRpmInChart * 1.15);
+        if (maxRpmInChart < 1000) maxRpmInChart = 1000;
+
+        lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, maxRpmInChart);
+        lv_chart_set_point_count(chart, turnCount);
+
+        for (int i = 0; i < turnCount; i++) {
+            lv_chart_set_value_by_id(chart, chart_series, i, turnData[i]);
+        }
+        lv_chart_refresh(chart);
+    }
 
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount) {
         updateCurrentRPM(origSP);
@@ -158,7 +169,7 @@ namespace UI {
         lv_led_on(led_status);
 
         label_status = lv_label_create(scr);
-        lv_label_set_text(label_status, "BLE DISCONNECTED");
+        lv_label_set_text(label_status, "Searching for BX-09");
         lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 55, 28);
         lv_obj_set_style_text_color(label_status, lv_palette_main(LV_PALETTE_GREY), 0);
         lv_obj_set_style_text_font(label_status, &lv_font_montserrat_24, 0);
@@ -232,7 +243,32 @@ namespace UI {
         
         lv_label_set_text(label_battery, "--% (--V) " LV_SYMBOL_BATTERY_FULL); 
     } 
+     // 🟢 繪製大紅電池低電量關機警告畫面
+    void showLowBatteryScreen() {
+        lv_obj_t * overlay = lv_obj_create(scr);
+        lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
+        lv_obj_align(overlay, LV_ALIGN_CENTER, 0, 0);
+        lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
+        lv_obj_set_style_border_width(overlay, 0, 0);
 
+        // 大紅電池圖示
+        lv_obj_t * icon = lv_label_create(overlay);
+        lv_label_set_text(icon, LV_SYMBOL_BATTERY_EMPTY);
+        lv_obj_set_style_text_color(icon, lv_palette_main(LV_PALETTE_RED), 0);
+        lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
+        lv_obj_align(icon, LV_ALIGN_CENTER, 0, -35);
+
+        // 警告警示文字
+        lv_obj_t * msg = lv_label_create(overlay);
+        lv_label_set_text(msg, "LOW BATTERY\nPLEASE CHARGE");
+        lv_obj_set_style_text_color(msg, lv_palette_main(LV_PALETTE_RED), 0);
+        lv_obj_set_style_text_font(msg, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(msg, LV_ALIGN_CENTER, 0, 35);
+
+        // 強制刷新 LVGL 畫面渲染
+        lv_timer_handler();
+    }
     void updateStatus(int state) {
         if (state >= 0 && state <= 3) {
             requested_ble_state = state;
@@ -258,65 +294,17 @@ namespace UI {
         }
     }
 
-    void showResults(uint16_t currentPeak, uint16_t allTimePeak, float history[], int histCount, uint16_t turnData[], int turnCount) {
-        bool needSaveBest = false;
-        
-        if (allTimePeak > global_all_time_best) {
-            global_all_time_best = allTimePeak;
-            needSaveBest = true;
-        }
-
-        for (int i = 7; i > 0; i--) {
-            global_history[i] = global_history[i - 1];
-        }
-        global_history[0] = currentPeak; 
-        
-        if (global_hist_count < 8) {
-            global_hist_count++;
-        }
-
-        prefs.begin("bx09_store", false); 
-        if (needSaveBest) {
-            prefs.putUInt("best_rpm", global_all_time_best);
-        }
-        prefs.putInt("hist_cnt", global_hist_count); 
-        prefs.putBytes("hist_arr", global_history, sizeof(global_history)); 
-        prefs.end();
-
-        updateCurrentRPM(currentPeak); 
-        lv_label_set_text_fmt(label_all_time_rpm, "%d SP", global_all_time_best);
-        
-        String histText = "";
-        for (int i = 0; i < global_hist_count; i++) {
-            histText += String(i + 1) + ". " + String(global_history[i]) + " SP\n";
-        }
-        lv_label_set_text(label_history, histText.c_str());
-
-        if (turnCount > 0) {
-            uint16_t maxRpmInChart = 0;
-            for (int i = 0; i < turnCount; i++) {
-                if (turnData[i] > maxRpmInChart) maxRpmInChart = turnData[i];
-            }
-            maxRpmInChart = maxRpmInChart * 1.15;
-            if (maxRpmInChart < 1000) maxRpmInChart = 1000;
-
-            lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, maxRpmInChart);
-            lv_chart_set_point_count(chart, turnCount);
-            
-            for (int i = 0; i < turnCount; i++) {
-                lv_chart_set_value_by_id(chart, chart_series, i, turnData[i]);
-            }
-            lv_chart_refresh(chart);
-        }
-    }
-
     void handleUpdate() {
         if (readyToDraw) {
             readyToDraw = false; 
-            showResults(Physics::peak_rpm, Physics::allTimePeak, Physics::history, Physics::historyCount, Physics::SP, Physics::size);
+            
+            // 🟢 修正 2：在主迴圈中安全地呼叫 LVGL 繪圖，完美避開當機與掉幀！
+            if (BLE_Manager::liveCurveCount > 0) {
+                updateChartCurve(BLE_Manager::liveCurveBuffer, BLE_Manager::liveCurveCount);
+                BLE_Manager::liveCurveCount = 0; // 畫完後清空，等待下次發射
+            }
             
             requested_ble_state = 1; 
-            
             is_showing_go_shoot = true;
             go_shoot_timer = millis();
             

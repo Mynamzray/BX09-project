@@ -1,13 +1,16 @@
 #pragma once
 #include <Arduino.h>
-#include "lcd_bl_pwm_bsp.h" // 引入背光控制以進行緊急關機
+#include <Preferences.h>
+#include <esp_sleep.h>
+#include "lcd_bl_pwm_bsp.h"
 
 namespace UI {
     void updateBattery(int percentage, float voltage, bool isCharging);
+    void showLowBatteryScreen();
 }
 
 // ==========================================
-// [模組 5] 電池監控器 (實測調校 S-Curve + 低壓強制過放保護)
+// [模組 5] 電池監控器 (NVS 記憶庫 + 絕對線性數學計算)
 // ==========================================
 namespace Battery_Manager {
     const int BAT_ADC_PIN = 4; 
@@ -24,56 +27,51 @@ namespace Battery_Manager {
     // 硬體分壓電阻校正參數
     const float CALIBRATION_FACTOR = 1.04; 
     
-    // 負載補償 (螢幕吃掉的電壓)
-    const float LOAD_COMPENSATION_MV = 150.0; 
+    // 🔋 負載補償核心 (Voltage Sag Compensation)
+    const float LOAD_COMPENSATION_MV = 250.0; 
 
-    // 🟢 實測調校 OCV 放電 S 曲線
-    // 將 3.1V (3100mV) 調整為 10%，2.95V (2950mV) 為 0%
-    struct VoltagePoint { float mV; float soc; };
-    const VoltagePoint OCV_TABLE[] = {
-        {3950, 100}, 
-        {3900,  95},
-        {3850,  90},
-        {3800,  85}, 
-        {3750,  80}, 
-        {3700,  75}, 
-        {3650,  70}, 
-        {3600,  65},
-        {3560,  60},
-        {3520,  55},
-        {3480,  50},
-        {3440,  45},
-        {3400,  40},
-        {3360,  35},
-        {3300,  30},
-        {3240,  20},
-        {3100,  10}, // 🟢 實測優化：3.1V 保持約 10% 電量
-        {2950,   0}  // 🟢 2.95V 電池安全關機點 (0%)
-    };
-    const int OCV_POINTS = sizeof(OCV_TABLE) / sizeof(OCV_TABLE[0]);
-
+    // 🟢 絕對線性等距公式：3.9V = 100%, 2.95V = 0%
     float getTruePercentage(float current_mV) {
-        if (current_mV >= OCV_TABLE[0].mV) return 100.0;
-        if (current_mV <= OCV_TABLE[OCV_POINTS - 1].mV) return 0.0;
+        if (current_mV >= 3900.0) return 100.0;
+        if (current_mV <= 2950.0) return 0.0;
 
-        for (int i = 0; i < OCV_POINTS - 1; i++) {
-            if (current_mV <= OCV_TABLE[i].mV && current_mV >= OCV_TABLE[i + 1].mV) {
-                float t = (current_mV - OCV_TABLE[i + 1].mV) / (OCV_TABLE[i].mV - OCV_TABLE[i + 1].mV);
-                return OCV_TABLE[i + 1].soc + t * (OCV_TABLE[i].soc - OCV_TABLE[i + 1].soc);
-            }
-        }
-        return 0.0;
+        // 數學映射：(當前電壓 - 最低電壓) / (總電壓區間) * 100
+        return ((current_mV - 2950.0) / (3900.0 - 2950.0)) * 100.0;
     }
 
     void init() {
         pinMode(BAT_ADC_PIN, INPUT);
+        
         uint32_t raw_sum = 0;
         for(int i = 0; i < 20; i++) {
             raw_sum += analogReadMilliVolts(BAT_ADC_PIN) * 2;
             delay(5);
         }
         filtered_mV = (raw_sum / 20.0) * CALIBRATION_FACTOR;
-        Serial.println("🔋 [系統] 電池模組啟動 (實測 S-Curve + 低壓深睡保護)");
+        
+        // 🟢 計算開機瞬間的「真實物理電量」
+        float boot_mV = filtered_mV + LOAD_COMPENSATION_MV;
+        float boot_pct = getTruePercentage(boot_mV);
+        
+        // 從 Flash 記憶庫讀取上次存下的電量
+        Preferences prefs;
+        prefs.begin("bx09_store", true);
+        int savedPct = prefs.getInt("bat_lvl", -1);
+        prefs.end();
+
+        if (savedPct >= 0 && savedPct <= 100) {
+            // 🚨 智慧解鎖機制：如果真實物理電量比記憶體高超過 5%，代表更換過電池或關機充電了！
+            if (boot_pct > savedPct + 5.0) {
+                lastPercentage = (int)boot_pct;
+                Serial.printf("🔋 [系統] 偵測到關機充電或更換電池，捨棄舊紀錄 %d%%，強制更新為 %d%%\n", savedPct, lastPercentage);
+            } else {
+                lastPercentage = savedPct;
+                Serial.printf("🔋 [系統] 從 Flash 記憶庫成功復原上次電量: %d%%\n", lastPercentage);
+            }
+        } else {
+            lastPercentage = (int)boot_pct;
+            Serial.println("🔋 [系統] 電池模組首次啟動 (無 NVS 紀錄)");
+        }
     }
 
     void handle() {
@@ -90,23 +88,27 @@ namespace Battery_Manager {
             // EMA 濾波器
             filtered_mV = (0.1 * current_mV) + (0.9 * filtered_mV);
 
-            // 嚴格的 USB 插入/拔除偵測 (電壓 >= 4.1V / 4100mV 判定為充電中)
-            if (current_mV - filtered_mV > 150 || current_mV >= 4100) {
+            // 嚴格的充電偵測 (大於 4.1V 絕對是插著 USB)
+            if (current_mV >= 4100) {
                 if (!isCharging) {
                     isCharging = true;
                     lastFakeChargeTime = millis();
+                    filtered_mV = current_mV; 
                 }
-                filtered_mV = current_mV; 
-            }
-            else if (filtered_mV - current_mV > 150) {
-                isCharging = false;
-                filtered_mV = current_mV; 
+            } 
+            // 小於 4.0V 絕對是拔除 USB
+            else if (current_mV <= 4000) {
+                if (isCharging) {
+                    isCharging = false;
+                    filtered_mV = current_mV; 
+                }
             }
 
+            // 負載補償
             float compensated_mV = filtered_mV + (isCharging ? 0 : LOAD_COMPENSATION_MV);
 
             if (isCharging) {
-                // 充電計時器：每 60 秒增加 1%
+                // 充電中：每 60 秒人為爬升 1%
                 if (millis() - lastFakeChargeTime > 60000) {
                     lastFakeChargeTime = millis();
                     if (lastPercentage < 100 && lastPercentage != -1) {
@@ -114,37 +116,46 @@ namespace Battery_Manager {
                     }
                 }
             } else {
-                // 真實放電查表
+                // 放電中：等距線性公式計算
                 int currentPercentage = (int)getTruePercentage(compensated_mV);
-
-                if (lastPercentage == -1) {
-                    lastPercentage = currentPercentage; 
-                } 
                 
-                // 單向鎖死機制
+                // 單向鎖死機制 (防止放電期間電量跳動)
                 if (currentPercentage < lastPercentage) {
                     lastPercentage = currentPercentage;
                 }
 
-                // 🛑 🟢 【低電量強制關機防護】
-                // 未接 USB 且電壓低於 2.95V (2950mV) 時，關閉背光並進入 Deep Sleep 避免鋰電池過放損壞！
+                // 🚨 低電量強制關機防護：未接 USB 且電壓 <= 2.95V (2950mV) 進入 Deep Sleep
                 if (compensated_mV <= 2950) {
                     lastPercentage = 0;
                     UI::updateBattery(0, compensated_mV / 1000.0, false);
-                    Serial.println("🚨 [電池過放保護] 電壓低於 2.95V！強制關閉螢幕背光並進入 Deep Sleep...");
-                    delay(300);
                     
-                    // 關閉 LCD 背光
-                    lcd_bl_pwm_bsp_init(0); 
+                    // 觸發大紅電池低電量畫面，並停留 3 秒
+                    UI::showLowBatteryScreen();
+                    delay(3000);
+
+                    Serial.println("🚨 [警告] 電池電壓過低 (<=2.95V)！關機進入 Deep Sleep 以保護鋰電池！");
                     
-                    // 進入 Deep Sleep 模式 (超低功耗休眠)
+                    // 關閉螢幕背光
+                    lcd_bl_pwm_bsp_init(LCD_PWM_MODE_0);
+                    
+                    // 進入 Deep Sleep 深度睡眠
                     esp_deep_sleep_start();
                 }
             }
 
             // 安全防線
-            if (!isCharging && compensated_mV >= 4100) {
+            if (!isCharging && compensated_mV >= 4150) {
                 lastPercentage = 100;
+            }
+
+            // 定期將最新的電量狀態存入 NVS 記憶庫
+            static int lastSavedPct = -1;
+            if (lastPercentage != lastSavedPct && lastPercentage >= 0) {
+                lastSavedPct = lastPercentage;
+                Preferences prefs;
+                prefs.begin("bx09_store", false);
+                prefs.putInt("bat_lvl", lastPercentage);
+                prefs.end();
             }
 
             float voltage_V = compensated_mV / 1000.0;
