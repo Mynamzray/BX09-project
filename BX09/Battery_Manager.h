@@ -25,7 +25,7 @@ namespace Battery_Manager {
     unsigned long lastFakeChargeTime = 0;
 
     // 硬體分壓電阻校正參數
-    const float CALIBRATION_FACTOR = 1.04; 
+    const float CALIBRATION_FACTOR = 1.05; 
     
     // 🔋 負載補償核心 (Voltage Sag Compensation)
     const float LOAD_COMPENSATION_MV = 250.0; 
