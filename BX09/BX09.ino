@@ -19,7 +19,7 @@
 #include "BLE_Manager.h"
 #include "Button_Manager.h"
 #include "Battery_Manager.h"
-#include "Web_Manager.h"
+// #include "Web_Manager.h"
 
 // ==========================================
 // 主程式入口 (Main Setup & Loop)
@@ -33,7 +33,7 @@ void setup() {
     BLE_Manager::init();    
 
     // 2. 再啟動 Wi-Fi 和 Web Server
-    Web_Manager::init();
+    // Web_Manager::init();
 
     // 3. 最後再啟動 UI 和其他硬體
     UI::init();             
@@ -42,15 +42,17 @@ void setup() {
 }
 
 void loop() {
-    // 維持藍牙連線與系統監控
+    // 1. 處理非 UI 的背景邏輯
     BLE_Manager::connectTask();
     Button_Manager::handle();
     Battery_Manager::handle(); 
-    
-    // 🟢 處理 WebSocket 的內部連線維護
-    Web_Manager::handle();
+    // Web_Manager::handle();
 
-    UI::handleUpdate();
-    lv_timer_handler(); 
-    delay(5); 
+    // 2. 安全地更新 UI (必須取得 lvgl_port 的 Mutex 鎖!)
+    if (example_lvgl_lock(50)) {
+        UI::handleUpdate();
+        example_lvgl_unlock();
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(5)); 
 }

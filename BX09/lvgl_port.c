@@ -21,8 +21,8 @@ static SemaphoreHandle_t lvgl_mux = NULL;
 static void example_lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map);
 static esp_lcd_panel_handle_t rgb_port_init(void);
 static void example_increase_lvgl_tick(void *arg);
-static bool example_lvgl_lock(int timeout_ms);
-static void example_lvgl_unlock(void);
+bool example_lvgl_lock(int timeout_ms);
+void example_lvgl_unlock(void);
 static void example_lvgl_port_task(void *arg);
 
 
@@ -132,16 +132,17 @@ static esp_lcd_panel_handle_t rgb_port_init(void)
     rgb_config.data_gpio_nums[14] = EXAMPLE_LCD_IO_RGB_R3; // GPIO 8
     rgb_config.data_gpio_nums[15] = EXAMPLE_LCD_IO_RGB_R4; // GPIO 18
   
-  rgb_config.timings.pclk_hz = 14 * 1000 * 1000;
+  rgb_config.timings.pclk_hz = 18 * 1000 * 1000;
   rgb_config.timings.h_res = EXAMPLE_LCD_H_RES;
   rgb_config.timings.v_res = EXAMPLE_LCD_V_RES;
-  rgb_config.timings.hsync_back_porch = 30;
-  rgb_config.timings.hsync_front_porch = 30;  //30
+  rgb_config.timings.hsync_back_porch = 30;                                                                                                                                                                                                                                            
   rgb_config.timings.hsync_pulse_width = 6;
   rgb_config.timings.vsync_back_porch = 20;
   rgb_config.timings.vsync_front_porch = 20;
   rgb_config.timings.vsync_pulse_width = 40;
 
+  rgb_config.bounce_buffer_size_px = 10 * EXAMPLE_LCD_H_RES;
+  
   st7701_vendor_config_t vendor_config = {};
   vendor_config.rgb_config = &rgb_config;
   vendor_config.init_cmds = lcd_init_cmds;// Uncomment these line if use custom initialization commands
@@ -152,25 +153,20 @@ static esp_lcd_panel_handle_t rgb_port_init(void)
                                                  * If the panel IO pins are sharing other pins of 
                                                  * Please set it to 1 to release the pins.
                                                 */
-  const esp_lcd_panel_dev_config_t panel_config = 
+const esp_lcd_panel_dev_config_t panel_config = 
   {
-    .reset_gpio_num = EXAMPLE_LCD_IO_RGB_RESET,                           // Set to -1 if not use
-    .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_BGR,     // Implemented by LCD command `36h`
-    .bits_per_pixel = EXAMPLE_LCD_BIT_PER_PIXEL,    // Implemented by LCD command `3Ah` (16/18/24)
+    .reset_gpio_num = EXAMPLE_LCD_IO_RGB_RESET,
+    .rgb_ele_order = LCD_RGB_ELEMENT_ORDER_RGB,
+    .bits_per_pixel = EXAMPLE_LCD_BIT_PER_PIXEL,
     .vendor_config = &vendor_config,
   };
 
   esp_lcd_panel_handle_t panel_handle = NULL;
   ESP_ERROR_CHECK(esp_lcd_new_panel_st7701(io_handle, &panel_config, &panel_handle));
-  // 🟢 在這裡插入這行，強制要求硬體晶片把色彩極性翻轉！
-  esp_lcd_panel_invert_color(panel_handle, false);   /**
   
-                                                                                         * Only create RGB when `enable_io_multiplex` is set to 0,
-                                                                                         * or initialize st7701 meanwhile
-                                                                                       */
-  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));             // Only reset RGB when `enable_io_multiplex` is set to 1, or reset st7701 meanwhile
-  ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));              // Only initialize RGB when `enable_io_multiplex` is set to 1, or initialize st7701 meanwhile
-
+  // FIX: Reset and init panel FIRST before any runtime command overrides
+  ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_handle));
+  ESP_ERROR_CHECK(esp_lcd_panel_init(panel_handle));
   return panel_handle;
 }
 
@@ -244,14 +240,17 @@ static void example_increase_lvgl_tick(void *arg)
   /* Tell LVGL how many milliseconds has elapsed */
   lv_tick_inc(EXAMPLE_LVGL_TICK_PERIOD_MS);
 }
-static bool example_lvgl_lock(int timeout_ms)
+bool example_lvgl_lock(int timeout_ms)
 {
-  assert(lvgl_mux && "bsp_display_start must be called first");
+    // 🛡️ Fail-safe check: prevent crash if called before lvgl_port_init() completes
+    if (lvgl_mux == NULL) {
+        return false; 
+    }
 
-  const TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-  return xSemaphoreTake(lvgl_mux, timeout_ticks) == pdTRUE;
+    const TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
+    return xSemaphoreTake(lvgl_mux, timeout_ticks) == pdTRUE;
 }
-static void example_lvgl_unlock(void)
+void example_lvgl_unlock(void)
 {
   assert(lvgl_mux && "bsp_display_start must be called first");
   xSemaphoreGive(lvgl_mux);

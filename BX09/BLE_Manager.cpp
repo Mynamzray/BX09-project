@@ -1,5 +1,6 @@
 #include "BLE_Manager.h"
 #include "Web_Manager.h"
+#include "lvgl_port.h"
 #include <Preferences.h>
 #include <WiFi.h>
 
@@ -7,7 +8,7 @@ namespace UI {
     extern volatile bool readyToDraw;
     void updateStatus(int state);
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount); 
-    void updateChartCurve(uint16_t* turnData, int turnCount); // 🟢 引入即時繪圖函數
+    void updateChartCurve(uint16_t* turnData, int turnCount);
 }
 
 namespace BLE_Manager {
@@ -26,7 +27,6 @@ namespace BLE_Manager {
 
     static uint8_t historyPackets[7][20];
 
-    // 🟢 修正：移除 static，讓 UI 模組可以在主執行緒安全地讀取它們
     uint16_t liveCurveBuffer[32];
     int liveCurveCount = 0;
 
@@ -54,7 +54,10 @@ namespace BLE_Manager {
             current_ui_state = 3; 
             if (current_ui_state != last_ui_state) {
                 last_ui_state = current_ui_state;
-                UI::updateStatus(current_ui_state);
+                if (example_lvgl_lock(100)) {
+                    UI::updateStatus(current_ui_state);
+                    example_lvgl_unlock();
+                }
                 
                 #if ENABLE_WEB_DASHBOARD
                 Preferences tempPrefs;
@@ -90,7 +93,7 @@ namespace BLE_Manager {
                 if (isAttachedNow && !isBeyInstalled) {
                     Serial.println("\n[狀態] 🟢 陀螺已安裝");
                     isBeyInstalled = true; 
-                    liveCurveCount = 0; // 重置發射曲線陣列
+                    liveCurveCount = 0;
                 } 
                 else if (!isAttachedNow && isBeyInstalled) {
                     Serial.println("\n[狀態] 🟡 陀螺已手動拔除");
@@ -144,7 +147,11 @@ namespace BLE_Manager {
                             }
                         }
                         
-                        UI::updateOfficialData(origSP, officialHistory, histCount);
+                        if (example_lvgl_lock(100)) {
+                            UI::updateOfficialData(origSP, officialHistory, histCount);
+                            example_lvgl_unlock();
+                        }
+
                         #if ENABLE_WEB_DASHBOARD
                         if (web_on) {
                             Web_Manager::broadcastOfficialHistory(origSP, officialHistory, histCount);
@@ -191,7 +198,11 @@ namespace BLE_Manager {
                     #if ENABLE_WEB_DASHBOARD
                     Web_Manager::broadcastOfficialHistory(origSP, officialHistory, histCount);
                     #endif
-                    UI::updateOfficialData(origSP, officialHistory, histCount);
+
+                    if (example_lvgl_lock(100)) {
+                        UI::updateOfficialData(origSP, officialHistory, histCount);
+                        example_lvgl_unlock();
+                    }
                 }
             }
         }
@@ -202,12 +213,10 @@ namespace BLE_Manager {
             }
         }
         else if (header >= 0x71 && header <= 0x73) {
-            // 🟢 修正 1：陣列索引必須從 1 開始！(修復位元錯位導致的亂碼與空圖表)
             for (int i = 1; i < (int)length - 1; i += 2) {
                 uint16_t rawTick = pData[i] | (pData[i+1] << 8);
                 if (rawTick > 0 && liveCurveCount < 32) {
                     uint32_t rpm = 7500000UL / rawTick;
-                    // 基本過濾：剔除破表雜訊
                     if (rpm > 500 && rpm < 18000) {
                         liveCurveBuffer[liveCurveCount++] = (uint16_t)rpm;
                     }
@@ -215,7 +224,6 @@ namespace BLE_Manager {
             }
 
             if (header == 0x73) {
-                // 🟢 修正 2：絕不在 BLE 執行緒中畫圖，只立旗標交給 UI 主迴圈處理 (防止 RTOS 衝突)
                 UI::readyToDraw = true; 
             }
         }
@@ -233,7 +241,7 @@ namespace BLE_Manager {
         pBLEScan->setActiveScan(true);
         pBLEScan->setInterval(100);
         pBLEScan->setWindow(50); 
-        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
+        NimBLEDevice::setPower(ESP_PWR_LVL_P3);
     }
 
     void connectTask() {
@@ -245,7 +253,10 @@ namespace BLE_Manager {
 
         if (current_ui_state != last_ui_state) {
             last_ui_state = current_ui_state;
-            UI::updateStatus(current_ui_state);
+            if (example_lvgl_lock(100)) {
+                UI::updateStatus(current_ui_state);
+                example_lvgl_unlock();
+            }
             
             #if ENABLE_WEB_DASHBOARD
             Preferences tempPrefs;
@@ -305,7 +316,7 @@ namespace BLE_Manager {
             }
         }
     }
-}
+} // namespace BLE_Manager
 
 void ClientCallback::onDisconnect(NimBLEClient* pClient, int reason) {
     BLE_Manager::isConnected = false;
