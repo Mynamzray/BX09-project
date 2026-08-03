@@ -142,27 +142,35 @@ namespace Battery_Manager {
                     esp_deep_sleep_start();
                 }
             }
+        // 定期將最新的電量狀態存入 NVS 記憶庫
+        static int lastSavedPct = -1;
+        if (lastPercentage != lastSavedPct && lastPercentage >= 0) {
+            lastSavedPct = lastPercentage;
+            Preferences prefs;
+            prefs.begin("bx09_store", false);
+            prefs.putInt("bat_lvl", lastPercentage);
+            prefs.end();
+        }
 
-            // 安全防線
-            if (!isCharging && compensated_mV >= 4150) {
-                lastPercentage = 100;
-            }
+        float voltage_V = compensated_mV / 1000.0;
+        UI::updateBattery(lastPercentage, voltage_V, isCharging);
 
-            // 定期將最新的電量狀態存入 NVS 記憶庫
-            static int lastSavedPct = -1;
-            if (lastPercentage != lastSavedPct && lastPercentage >= 0) {
-                lastSavedPct = lastPercentage;
-                Preferences prefs;
-                prefs.begin("bx09_store", false);
-                prefs.putInt("bat_lvl", lastPercentage);
-                prefs.end();
-            }
+// --- 只在電量%或電壓明顯變化時列印，避免 ADC 抖動洗版 ---
+        static int lastPrintedPct = -1;
+        static float lastPrintedVoltage = -1.0;
+        static bool lastPrintedCharging = false;
 
-            float voltage_V = compensated_mV / 1000.0;
-            UI::updateBattery(lastPercentage, voltage_V, isCharging);
+        bool pctChanged = (lastPercentage != lastPrintedPct);
+        bool chargeStateChanged = (isCharging != lastPrintedCharging);
+        bool voltageChanged = (fabs(voltage_V - lastPrintedVoltage) >= 0.02);  // 電壓變化 >= 20mV 才算
 
-            Serial.printf("🔋 [電池狀態] 原始: %.0fmV | 補償還原: %.0fmV => 最終電量: %d%% [%s]\n",
-                          filtered_mV, compensated_mV, lastPercentage, isCharging ? "充電中 ⚡" : "放電中");
+        if (pctChanged || chargeStateChanged || voltageChanged) {
+            Serial.printf("🔋 [電池狀態] 原始: %.0fmV | 補償還原: %.0fmV -> 最終電量: %d%% [%s]\n",
+                filtered_mV, compensated_mV, lastPercentage, isCharging ? "充電中 ⚡" : "放電中");
+            lastPrintedPct = lastPercentage;
+            lastPrintedVoltage = voltage_V;
+            lastPrintedCharging = isCharging;
         }
     }
+}
 }

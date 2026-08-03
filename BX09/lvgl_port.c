@@ -132,7 +132,7 @@ static esp_lcd_panel_handle_t rgb_port_init(void)
     rgb_config.data_gpio_nums[14] = EXAMPLE_LCD_IO_RGB_R3; // GPIO 8
     rgb_config.data_gpio_nums[15] = EXAMPLE_LCD_IO_RGB_R4; // GPIO 18
   
-  rgb_config.timings.pclk_hz = 18 * 1000 * 1000;
+  rgb_config.timings.pclk_hz = 14 * 1000 * 1000;
   rgb_config.timings.h_res = EXAMPLE_LCD_H_RES;
   rgb_config.timings.v_res = EXAMPLE_LCD_V_RES;
   rgb_config.timings.hsync_back_porch = 30;                                                                                                                                                                                                                                            

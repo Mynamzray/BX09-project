@@ -28,7 +28,11 @@
 void setup() {
     Serial.begin(115200);
     delay(2000);
-
+    Serial.printf("Free heap: %d, Free internal: %d, Free PSRAM: %d\n",
+     esp_get_free_heap_size(),
+     heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+     heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+     
     // 1. 先讓最肥的藍牙初始化，搶佔內部 RAM
     BLE_Manager::init();    
 
