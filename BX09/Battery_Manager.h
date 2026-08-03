@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <esp_sleep.h>
 #include "lcd_bl_pwm_bsp.h"
+#include "lvgl_port.h"
 
 namespace UI {
     void updateBattery(int percentage, float voltage, bool isCharging);
@@ -127,10 +128,13 @@ namespace Battery_Manager {
                 // 🚨 低電量強制關機防護：未接 USB 且電壓 <= 2.95V (2950mV) 進入 Deep Sleep
                 if (compensated_mV <= 2950) {
                     lastPercentage = 0;
-                    UI::updateBattery(0, compensated_mV / 1000.0, false);
-                    
-                    // 觸發大紅電池低電量畫面，並停留 3 秒
-                    UI::showLowBatteryScreen();
+                    // Both UI:: calls touch LVGL objects — must hold the render mutex
+                    // or they race the dedicated LVGL task and corrupt its widget tree.
+                    if (example_lvgl_lock(100)) {
+                        UI::updateBattery(0, compensated_mV / 1000.0, false);
+                        UI::showLowBatteryScreen();
+                        example_lvgl_unlock();
+                    }
                     delay(3000);
 
                     Serial.println("🚨 [警告] 電池電壓過低 (<=2.95V)！關機進入 Deep Sleep 以保護鋰電池！");
@@ -153,7 +157,10 @@ namespace Battery_Manager {
         }
 
         float voltage_V = compensated_mV / 1000.0;
-        UI::updateBattery(lastPercentage, voltage_V, isCharging);
+        if (example_lvgl_lock(100)) {
+            UI::updateBattery(lastPercentage, voltage_V, isCharging);
+            example_lvgl_unlock();
+        }
 
 // --- 只在電量%或電壓明顯變化時列印，避免 ADC 抖動洗版 ---
         static int lastPrintedPct = -1;

@@ -5,6 +5,7 @@
 #include "user_config.h"
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
+#include "Stopwatch_Manager.h"
 
 namespace BLE_Manager {
     void toggleBluetooth();
@@ -57,6 +58,17 @@ namespace UI {
     lv_obj_t * chart;
     lv_obj_t * label_battery; 
     lv_chart_series_t * chart_series;
+
+    // Panel containers and stopwatch widgets
+    lv_obj_t * panel_normal;
+    lv_obj_t * panel_stopwatch;
+    lv_obj_t * sw_arc;
+    lv_obj_t * sw_arc_sec_label;
+    lv_obj_t * sw_run_label;
+    lv_obj_t * sw_cur_sp_label;
+    lv_obj_t * sw_timer_label;
+    lv_obj_t * sw_peak_label;
+    lv_obj_t * sw_hist_label;
 
     static int current_displayed_rpm = 0;
 
@@ -143,7 +155,7 @@ namespace UI {
 
         if (label_history) {
             String histText = "";
-            for (int i = 0; i < histCount; i++) {
+            for (int i = 0; i < histCount && i < 7; i++) {
                 histText += String(i + 1) + ". " + String(history[i]) + " SP\n";
             }
             if (histCount == 0) {
@@ -158,90 +170,183 @@ namespace UI {
         lcd_bl_pwm_bsp_init(LCD_PWM_MODE_255);
 
         scr = lv_scr_act();
-        
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_text_color(scr, lv_color_white(), LV_PART_MAIN);
 
+        // ── Shared status bar — always visible in both modes ─────────────────────
         led_status = lv_led_create(scr);
-        lv_obj_align(led_status, LV_ALIGN_TOP_LEFT, 30, 30);
-        lv_obj_set_size(led_status, 15, 15);
+        lv_obj_align(led_status, LV_ALIGN_TOP_LEFT, 20, 16);
+        lv_obj_set_size(led_status, 14, 14);
         lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
         lv_led_on(led_status);
 
         label_status = lv_label_create(scr);
         lv_label_set_text(label_status, "Searching for BX-09");
-        lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 55, 28);
+        lv_obj_align(label_status, LV_ALIGN_TOP_LEFT, 42, 13);
         lv_obj_set_style_text_color(label_status, lv_palette_main(LV_PALETTE_GREY), 0);
         lv_obj_set_style_text_font(label_status, &lv_font_montserrat_24, 0);
 
-        lv_obj_t * lbl_cur_title = lv_label_create(scr);
+        label_battery = lv_label_create(scr);
+        lv_obj_align(label_battery, LV_ALIGN_TOP_RIGHT, -15, 13);
+        lv_obj_set_style_text_font(label_battery, &lv_font_montserrat_24, 0);
+        lv_label_set_text(label_battery, "--% (--V) " LV_SYMBOL_BATTERY_FULL);
+
+        // ── Normal mode panel (820x320, transparent) ────────────────────────
+        panel_normal = lv_obj_create(scr);
+        lv_obj_set_size(panel_normal, 820, 320);
+        lv_obj_set_pos(panel_normal, 0, 0);
+        lv_obj_set_style_bg_opa(panel_normal, 0, 0);
+        lv_obj_set_style_border_width(panel_normal, 0, 0);
+        lv_obj_set_style_pad_all(panel_normal, 0, 0);
+        lv_obj_set_style_radius(panel_normal, 0, 0);
+        lv_obj_clear_flag(panel_normal, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(panel_normal, LV_OBJ_FLAG_CLICKABLE);
+
+        lv_obj_set_style_text_color(panel_normal, lv_color_white(), 0);
+        lv_obj_t * lbl_cur_title = lv_label_create(panel_normal);
         lv_label_set_text(lbl_cur_title, "CURRENT SP");
-        lv_obj_align(lbl_cur_title, LV_ALIGN_TOP_LEFT, 30, 80);
+        lv_obj_align(lbl_cur_title, LV_ALIGN_TOP_LEFT, 20, 58);
         lv_obj_set_style_text_color(lbl_cur_title, lv_palette_main(LV_PALETTE_RED), 0);
         lv_obj_set_style_text_font(lbl_cur_title, &lv_font_montserrat_24, 0);
 
-        label_current_rpm = lv_label_create(scr);
-        lv_label_set_text(label_current_rpm, "0");
-        lv_obj_align(label_current_rpm, LV_ALIGN_TOP_LEFT, 30, 110);
-        lv_obj_set_style_text_font(label_current_rpm, &lv_font_montserrat_48, 0); 
+        label_current_rpm = lv_label_create(panel_normal);
+        lv_label_set_text(label_current_rpm, "0 SP");
+        lv_obj_align(label_current_rpm, LV_ALIGN_TOP_LEFT, 20, 85);
+        lv_obj_set_style_text_font(label_current_rpm, &lv_font_montserrat_48, 0);
 
-        lv_obj_t * lbl_best_title = lv_label_create(scr);
+        lv_obj_t * lbl_best_title = lv_label_create(panel_normal);
         lv_label_set_text(lbl_best_title, "ALL-TIME BEST");
-        lv_obj_align(lbl_best_title, LV_ALIGN_TOP_LEFT, 30, 200);
+        lv_obj_align(lbl_best_title, LV_ALIGN_TOP_LEFT, 20, 152);
         lv_obj_set_style_text_color(lbl_best_title, lv_palette_main(LV_PALETTE_AMBER), 0);
         lv_obj_set_style_text_font(lbl_best_title, &lv_font_montserrat_24, 0);
 
-        label_all_time_rpm = lv_label_create(scr);
+        label_all_time_rpm = lv_label_create(panel_normal);
         prefs.begin("bx09_store", true);
-        global_all_time_best = prefs.getUInt("best_rpm", 0); 
+        global_all_time_best = prefs.getUInt("best_rpm", 0);
         global_hist_count = prefs.getInt("hist_cnt", 0);
-        if (global_hist_count > 0) {
-            prefs.getBytes("hist_arr", global_history, sizeof(global_history));
-        }
-        prefs.end(); 
-
+        if (global_hist_count > 0) prefs.getBytes("hist_arr", global_history, sizeof(global_history));
+        prefs.end();
         lv_label_set_text_fmt(label_all_time_rpm, "%d SP", global_all_time_best);
-        lv_obj_align(label_all_time_rpm, LV_ALIGN_TOP_LEFT, 30, 230);
+        lv_obj_align(label_all_time_rpm, LV_ALIGN_TOP_LEFT, 20, 179);
         lv_obj_set_style_text_font(label_all_time_rpm, &lv_font_montserrat_36, 0);
 
-        lv_obj_t * lbl_hist_title = lv_label_create(scr);
+        lv_obj_t * lbl_hist_title = lv_label_create(panel_normal);
         lv_label_set_text(lbl_hist_title, "Recent History");
-        lv_obj_align(lbl_hist_title, LV_ALIGN_TOP_LEFT, 350, 30);
+        lv_obj_align(lbl_hist_title, LV_ALIGN_TOP_LEFT, 325, 58);
         lv_obj_set_style_text_color(lbl_hist_title, lv_palette_main(LV_PALETTE_CYAN), 0);
         lv_obj_set_style_text_font(lbl_hist_title, &lv_font_montserrat_24, 0);
 
-        label_history = lv_label_create(scr);
-        String histText = "";
-        for (int i = 0; i < global_hist_count; i++) {
-            histText += String(i + 1) + ". " + String(global_history[i]) + " SP\n";
+        label_history = lv_label_create(panel_normal);
+        {
+            String histText = "";
+            for (int i = 0; i < global_hist_count && i < 7; i++)
+                histText += String(i + 1) + ". " + String(global_history[i]) + " SP\n";
+            if (global_hist_count == 0)
+                histText = "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -";
+            lv_label_set_text(label_history, histText.c_str());
         }
-        if (global_hist_count == 0) {
-            histText = "1. -\n2. -\n3. -\n4. -\n5. -\n6. -\n7. -\n8. -";
-        }
-
-        lv_label_set_text(label_history, histText.c_str()); 
-        lv_obj_align(label_history, LV_ALIGN_TOP_LEFT, 350, 65);
-        lv_obj_set_style_text_line_space(label_history, 8, 0);
+        lv_obj_align(label_history, LV_ALIGN_TOP_LEFT, 325, 85);
+        lv_obj_set_style_text_line_space(label_history, 2, 0);
         lv_obj_set_style_text_font(label_history, &lv_font_montserrat_24, 0);
 
-        chart = lv_chart_create(scr);
-        lv_obj_set_size(chart, 250, 210); 
-        lv_obj_align(chart, LV_ALIGN_TOP_LEFT, 550, 70);
-        
-        lv_obj_set_style_bg_opa(chart, 0, LV_PART_MAIN);     
-        lv_obj_set_style_border_color(chart, lv_color_hex(0x333333), LV_PART_MAIN); 
-        
+        chart = lv_chart_create(panel_normal);
+        lv_obj_set_size(chart, 225, 245);
+        lv_obj_align(chart, LV_ALIGN_TOP_LEFT, 580, 58);
+        lv_obj_set_style_bg_opa(chart, 0, LV_PART_MAIN);
+        lv_obj_set_style_border_color(chart, lv_color_hex(0x333333), LV_PART_MAIN);
         lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
         chart_series = lv_chart_add_series(chart, lv_color_hex(0xFF0000), LV_CHART_AXIS_PRIMARY_Y);
         lv_obj_set_style_line_width(chart, 3, LV_PART_ITEMS);
         lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
         lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
-        
-        label_battery = lv_label_create(scr);
-        lv_obj_align(label_battery, LV_ALIGN_TOP_RIGHT, -20, 20); 
-        lv_obj_set_style_text_font(label_battery, &lv_font_montserrat_24, 0);
-        
-        lv_label_set_text(label_battery, "--% (--V) " LV_SYMBOL_BATTERY_FULL); 
+
+        // ── Stopwatch panel (hidden by default) ─────────────────────────────
+        panel_stopwatch = lv_obj_create(scr);
+        lv_obj_set_size(panel_stopwatch, 820, 320);
+        lv_obj_set_pos(panel_stopwatch, 0, 0);
+        lv_obj_set_style_bg_opa(panel_stopwatch, 0, 0);
+        lv_obj_set_style_border_width(panel_stopwatch, 0, 0);
+        lv_obj_set_style_pad_all(panel_stopwatch, 0, 0);
+        lv_obj_set_style_radius(panel_stopwatch, 0, 0);
+        lv_obj_clear_flag(panel_stopwatch, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(panel_stopwatch, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_text_color(panel_stopwatch, lv_color_white(), 0);
+        lv_obj_add_flag(panel_stopwatch, LV_OBJ_FLAG_HIDDEN);
+
+        // Left column — run counter + clock arc
+        sw_run_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_run_label, "Run: 0");
+        lv_obj_align(sw_run_label, LV_ALIGN_TOP_LEFT, 20, 58);
+        lv_obj_set_style_text_color(sw_run_label, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_font(sw_run_label, &lv_font_montserrat_24, 0);
+
+        sw_arc = lv_arc_create(panel_stopwatch);
+        lv_obj_set_size(sw_arc, 200, 200);
+        lv_obj_align(sw_arc, LV_ALIGN_TOP_LEFT, 15, 82);
+        lv_arc_set_rotation(sw_arc, 270);          // 12 o\'clock start
+        lv_arc_set_bg_angles(sw_arc, 0, 360);       // full-circle background track
+        lv_arc_set_range(sw_arc, 0, 360);           // maps to 0-60000ms (1 full turn = 1 minute)
+        lv_arc_set_value(sw_arc, 0);
+        lv_arc_set_mode(sw_arc, LV_ARC_MODE_NORMAL);
+        lv_obj_clear_flag(sw_arc, LV_OBJ_FLAG_CLICKABLE);  // display-only, no drag/knob interaction
+        lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_MAIN);
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x2a2a2a), LV_PART_MAIN);
+        lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0xFF5500), LV_PART_INDICATOR);
+        lv_obj_set_style_width(sw_arc, 0, LV_PART_KNOB);
+        lv_obj_set_style_height(sw_arc, 0, LV_PART_KNOB);
+        lv_obj_set_style_pad_all(sw_arc, 0, LV_PART_KNOB);       // theme default knob padding was the "blue ball"
+        lv_obj_set_style_bg_opa(sw_arc, LV_OPA_TRANSP, LV_PART_KNOB);
+        lv_obj_set_style_border_width(sw_arc, 0, LV_PART_KNOB);
+
+        sw_arc_sec_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_arc_sec_label, "0");
+        lv_obj_set_width(sw_arc_sec_label, 80);
+        lv_obj_align(sw_arc_sec_label, LV_ALIGN_TOP_LEFT, 75, 162);
+        lv_obj_set_style_text_align(sw_arc_sec_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(sw_arc_sec_label, &lv_font_montserrat_36, 0);
+
+        // Middle column — current SP + large timer + peak SP
+        lv_obj_t * sw_lbl_sp_title = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_lbl_sp_title, "CURRENT SP");
+        lv_obj_align(sw_lbl_sp_title, LV_ALIGN_TOP_LEFT, 280, 58);
+        lv_obj_set_style_text_color(sw_lbl_sp_title, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_font(sw_lbl_sp_title, &lv_font_montserrat_24, 0);
+
+        sw_cur_sp_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_cur_sp_label, "0 SP");
+        lv_obj_align(sw_cur_sp_label, LV_ALIGN_TOP_LEFT, 280, 82);
+        lv_obj_set_style_text_font(sw_cur_sp_label, &lv_font_montserrat_36, 0);
+
+        sw_timer_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_timer_label, "00:00.00");
+        lv_obj_align(sw_timer_label, LV_ALIGN_TOP_LEFT, 280, 140);
+        lv_obj_set_style_text_font(sw_timer_label, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_color(sw_timer_label, lv_color_white(), 0);
+
+        lv_obj_t * sw_lbl_peak_title = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_lbl_peak_title, "PEAK SP");
+        lv_obj_align(sw_lbl_peak_title, LV_ALIGN_TOP_LEFT, 280, 207);
+        lv_obj_set_style_text_color(sw_lbl_peak_title, lv_palette_main(LV_PALETTE_AMBER), 0);
+        lv_obj_set_style_text_font(sw_lbl_peak_title, &lv_font_montserrat_24, 0);
+
+        sw_peak_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_peak_label, "0 SP");
+        lv_obj_align(sw_peak_label, LV_ALIGN_TOP_LEFT, 280, 234);
+        lv_obj_set_style_text_font(sw_peak_label, &lv_font_montserrat_36, 0);
+
+        // Right column — run history
+        lv_obj_t * sw_lbl_hist_title = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_lbl_hist_title, "RUN HISTORY");
+        lv_obj_align(sw_lbl_hist_title, LV_ALIGN_TOP_LEFT, 570, 58);
+        lv_obj_set_style_text_color(sw_lbl_hist_title, lv_palette_main(LV_PALETTE_CYAN), 0);
+        lv_obj_set_style_text_font(sw_lbl_hist_title, &lv_font_montserrat_24, 0);
+
+        sw_hist_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_hist_label, "\u2014");
+        lv_obj_align(sw_hist_label, LV_ALIGN_TOP_LEFT, 570, 82);
+        lv_obj_set_style_text_font(sw_hist_label, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_line_space(sw_hist_label, 4, 0);
     } 
      // 🟢 繪製大紅電池低電量關機警告畫面
     void showLowBatteryScreen() {
@@ -275,6 +380,125 @@ namespace UI {
         }
     }
 
+    // ── Panel slide animation ───────────────────────────────────────
+    static void panel_anim_x_cb(void* obj, int32_t v) {
+        lv_obj_set_x((lv_obj_t*)obj, v);
+    }
+    static void panel_slide_out_done_cb(lv_anim_t* a) {
+        lv_obj_add_flag((lv_obj_t*)a->var, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_x((lv_obj_t*)a->var, 0);
+    }
+    static void _slide_panels(lv_obj_t* outPanel, lv_obj_t* inPanel, int dir) {
+        lv_obj_set_x(inPanel, dir * 820);
+        lv_obj_clear_flag(inPanel, LV_OBJ_FLAG_HIDDEN);
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_exec_cb(&a, panel_anim_x_cb);
+        lv_anim_set_time(&a, 220);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
+        lv_anim_set_var(&a, inPanel);
+        lv_anim_set_values(&a, dir * 820, 0);
+        lv_anim_start(&a);
+        lv_anim_set_var(&a, outPanel);
+        lv_anim_set_values(&a, 0, -dir * 820);
+        lv_anim_set_ready_cb(&a, panel_slide_out_done_cb);
+        lv_anim_start(&a);
+    }
+    void enterStopwatchMode() {
+        // force top-bar state refresh on first display frame
+        current_rendered_state = -1;
+        _slide_panels(panel_normal, panel_stopwatch, 1);
+    }
+    void exitStopwatchMode() {
+        _slide_panels(panel_stopwatch, panel_normal, -1);
+    }
+
+    // ── Stopwatch display update (called every frame in stopwatch mode) ─────
+    void updateStopwatchDisplay() {
+        if (!sw_timer_label) return;
+        int64_t ms  = Stopwatch_Manager::elapsedMs();
+        int     min = (int)(ms / 60000);
+        int     sec = (int)((ms % 60000) / 1000);
+        int     cs  = (int)((ms % 1000) / 10);
+
+        // Skip re-formatting/redrawing labels whose displayed text hasn't actually
+        // changed — this loop runs at ~100-200Hz and un-throttled lv_label_set_text_fmt
+        // calls (each forces a re-layout + invalidate) were starving the LVGL render
+        // task of its mutex, causing the visible "jumpy" multi-second skips.
+        static int lastMin = -1, lastSec = -1, lastCs = -1;
+        if (min != lastMin || sec != lastSec || cs != lastCs) {
+            lastMin = min; lastSec = sec; lastCs = cs;
+            lv_label_set_text_fmt(sw_timer_label, "%02d:%02d.%02d", min, sec, cs);
+        }
+
+        static int lastArcSec = -1;
+        if (sec != lastArcSec) {
+            lastArcSec = sec;
+            lv_label_set_text_fmt(sw_arc_sec_label, "%d", sec);
+        }
+        lv_arc_set_value(sw_arc, (int32_t)((ms % 60000) * 360 / 60000));
+
+        static int lastCurSP = -1, lastPeakSP = -1;
+        int curSP  = (int)Stopwatch_Manager::currentSP;
+        int peakSP = (int)Stopwatch_Manager::peakSP;
+        if (curSP != lastCurSP) {
+            lastCurSP = curSP;
+            lv_label_set_text_fmt(sw_cur_sp_label, "%d SP", curSP);
+        }
+        if (peakSP != lastPeakSP) {
+            lastPeakSP = peakSP;
+            lv_label_set_text_fmt(sw_peak_label, "%d SP", peakSP);
+        }
+
+        static int lastRunCount = -1;
+        bool runCountChanged = (Stopwatch_Manager::runCount != lastRunCount);
+        if (runCountChanged) {
+            lastRunCount = Stopwatch_Manager::runCount;
+            char runBuf[16];
+            snprintf(runBuf, sizeof(runBuf), "Run: %d", Stopwatch_Manager::runCount);
+            lv_label_set_text(sw_run_label, runBuf);
+        }
+        // Reflect stopwatch state in the shared top-bar status indicator
+        static Stopwatch_Manager::State lastRenderedState = Stopwatch_Manager::State::IDLE;
+        if (Stopwatch_Manager::state != lastRenderedState) {
+            lastRenderedState = Stopwatch_Manager::state;
+            switch (Stopwatch_Manager::state) {
+                case Stopwatch_Manager::State::ARMED:
+                    lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREEN));
+                    lv_label_set_text(label_status, "BEYBLADE READY");
+                    break;
+                case Stopwatch_Manager::State::RUNNING:
+                    lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_CYAN));
+                    lv_label_set_text(label_status, "STOPWATCH RUNNING");
+                    break;
+                case Stopwatch_Manager::State::STOPPED:
+                    lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
+                    lv_label_set_text(label_status, "RUN COMPLETE");
+                    break;
+                default:
+                    lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_GREY));
+                    lv_label_set_text(label_status, "STOPWATCH IDLE");
+                    break;
+            }
+        }
+        int total = Stopwatch_Manager::runCount;
+        if (total > 0 && runCountChanged) {
+            // Build with a fixed stack buffer, not Arduino String — avoids per-frame
+            // heap alloc/free churn that was contending with the LVGL render task's mutex.
+            char histText[256];
+            size_t pos = 0;
+            int start = (total > 6) ? (total - 6) : 0;
+            for (int i = start; i < total && pos < sizeof(histText) - 32; i++) {
+                uint32_t rm = Stopwatch_Manager::runHistory[i] / 60000;
+                uint32_t rs = (Stopwatch_Manager::runHistory[i] % 60000) / 1000;
+                uint32_t rc = (Stopwatch_Manager::runHistory[i] % 1000) / 10;
+                pos += snprintf(histText + pos, sizeof(histText) - pos,
+                                 "%d. %u:%02u.%02u\n", i + 1, rm, rs, rc);
+            }
+            lv_label_set_text(sw_hist_label, histText);
+        }
+    }
+
     void renderStatusUI(int state) { 
         if (state == 0) {
             lv_led_set_color(led_status, lv_palette_main(LV_PALETTE_RED));
@@ -295,6 +519,17 @@ namespace UI {
     }
 
     void handleUpdate() {
+        if (Stopwatch_Manager::isStopwatchMode) {
+            // Cap stopwatch UI redraws at 20 Hz — the loop runs much faster and
+            // hammering lv_label_set_text every iteration starves the render task.
+            static unsigned long lastSwUpdate = 0;
+            unsigned long now = millis();
+            if (now - lastSwUpdate >= 50) {
+                lastSwUpdate = now;
+                updateStopwatchDisplay();
+            }
+            return;
+        }
         if (readyToDraw) {
             readyToDraw = false; 
             
