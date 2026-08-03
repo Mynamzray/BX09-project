@@ -239,8 +239,8 @@ namespace BLE_Manager {
         pBLEScan = NimBLEDevice::getScan();
         pBLEScan->setScanCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setActiveScan(true);
-        pBLEScan->setInterval(100);
-        pBLEScan->setWindow(50); 
+        pBLEScan->setInterval(40);
+        pBLEScan->setWindow(40); 
         NimBLEDevice::setPower(ESP_PWR_LVL_P3);
     }
 
