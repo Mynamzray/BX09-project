@@ -27,7 +27,6 @@
 
 void setup() {
     Serial.begin(115200);
-    delay(2000);
     Serial.printf("Free heap: %d, Free internal: %d, Free PSRAM: %d\n",
      esp_get_free_heap_size(),
      heap_caps_get_free_size(MALLOC_CAP_INTERNAL),

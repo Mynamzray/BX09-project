@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <lvgl.h>
 #include <Preferences.h>
+#include <esp_heap_caps.h>
 #include "user_config.h"
 #include "lvgl_port.h"
 #include "lcd_bl_pwm_bsp.h"
@@ -65,10 +66,11 @@ namespace UI {
     lv_obj_t * sw_arc;
     lv_obj_t * sw_arc_sec_label;
     lv_obj_t * sw_run_label;
-    lv_obj_t * sw_cur_sp_label;
-    lv_obj_t * sw_timer_label;
-    lv_obj_t * sw_peak_label;
     lv_obj_t * sw_hist_label;
+    lv_obj_t * sw_values_canvas;
+    static constexpr lv_coord_t SW_VALUES_CANVAS_WIDTH = 270;
+    static constexpr lv_coord_t SW_VALUES_CANVAS_HEIGHT = 195;
+    lv_color_t * sw_values_canvas_buffer = nullptr;
 
     static int current_displayed_rpm = 0;
 
@@ -79,6 +81,18 @@ namespace UI {
 
     void updateBattery(int percentage, float voltage, bool isCharging) {
         if (!label_battery) return;
+
+        int voltageTenths = (int)(voltage * 10.0f + 0.5f);
+        static int lastPercentage = -1;
+        static int lastVoltageTenths = -1;
+        static bool lastCharging = false;
+        if (percentage == lastPercentage && voltageTenths == lastVoltageTenths &&
+            isCharging == lastCharging) {
+            return;
+        }
+        lastPercentage = percentage;
+        lastVoltageTenths = voltageTenths;
+        lastCharging = isCharging;
 
         const char* symbol;
         if (isCharging) {
@@ -98,8 +112,8 @@ namespace UI {
             }
         }
         
-        String vStr = String(voltage, 1);
-        lv_label_set_text_fmt(label_battery, "%d%% (%sV) %s", percentage, vStr.c_str(), symbol);
+        lv_label_set_text_fmt(label_battery, "%d%% (%d.%dV) %s", percentage,
+                      voltageTenths / 10, voltageTenths % 10, symbol);
     } 
 
     void updateCurrentRPM(int target_rpm) {
@@ -143,12 +157,21 @@ namespace UI {
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount) {
         updateCurrentRPM(origSP);
 
+        bool hasNewAllTimeBest = origSP > global_all_time_best;
+        if (hasNewAllTimeBest) {
+            global_all_time_best = origSP;
+            lv_label_set_text_fmt(label_all_time_rpm, "%d SP", global_all_time_best);
+        }
+
         global_hist_count = histCount;
         for (int i = 0; i < histCount; i++) {
             global_history[i] = history[i];
         }
 
         prefs.begin("bx09_store", false); 
+        if (hasNewAllTimeBest) {
+            prefs.putUInt("best_rpm", global_all_time_best);
+        }
         prefs.putInt("hist_cnt", global_hist_count); 
         prefs.putBytes("hist_arr", global_history, sizeof(global_history)); 
         prefs.end();
@@ -313,27 +336,29 @@ namespace UI {
         lv_obj_set_style_text_color(sw_lbl_sp_title, lv_palette_main(LV_PALETTE_GREY), 0);
         lv_obj_set_style_text_font(sw_lbl_sp_title, &lv_font_montserrat_24, 0);
 
-        sw_cur_sp_label = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_cur_sp_label, "0 SP");
-        lv_obj_align(sw_cur_sp_label, LV_ALIGN_TOP_LEFT, 280, 82);
-        lv_obj_set_style_text_font(sw_cur_sp_label, &lv_font_montserrat_36, 0);
-
-        sw_timer_label = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_timer_label, "00:00.00");
-        lv_obj_align(sw_timer_label, LV_ALIGN_TOP_LEFT, 280, 140);
-        lv_obj_set_style_text_font(sw_timer_label, &lv_font_montserrat_48, 0);
-        lv_obj_set_style_text_color(sw_timer_label, lv_color_white(), 0);
+        // The frequently changing numbers share one RAM-backed canvas, so LVGL
+        // presents a complete timer frame rather than individually updated labels.
+        sw_values_canvas_buffer = static_cast<lv_color_t *>(heap_caps_malloc(
+            SW_VALUES_CANVAS_WIDTH * SW_VALUES_CANVAS_HEIGHT * sizeof(lv_color_t),
+            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+        if (!sw_values_canvas_buffer) {
+            sw_values_canvas_buffer = static_cast<lv_color_t *>(heap_caps_malloc(
+                SW_VALUES_CANVAS_WIDTH * SW_VALUES_CANVAS_HEIGHT * sizeof(lv_color_t),
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        }
+        if (sw_values_canvas_buffer) {
+            sw_values_canvas = lv_canvas_create(panel_stopwatch);
+            lv_canvas_set_buffer(sw_values_canvas, sw_values_canvas_buffer,
+                                 SW_VALUES_CANVAS_WIDTH, SW_VALUES_CANVAS_HEIGHT,
+                                 LV_IMG_CF_TRUE_COLOR);
+            lv_obj_align(sw_values_canvas, LV_ALIGN_TOP_LEFT, 280, 82);
+        }
 
         lv_obj_t * sw_lbl_peak_title = lv_label_create(panel_stopwatch);
         lv_label_set_text(sw_lbl_peak_title, "PEAK SP");
         lv_obj_align(sw_lbl_peak_title, LV_ALIGN_TOP_LEFT, 280, 207);
         lv_obj_set_style_text_color(sw_lbl_peak_title, lv_palette_main(LV_PALETTE_AMBER), 0);
         lv_obj_set_style_text_font(sw_lbl_peak_title, &lv_font_montserrat_24, 0);
-
-        sw_peak_label = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_peak_label, "0 SP");
-        lv_obj_align(sw_peak_label, LV_ALIGN_TOP_LEFT, 280, 234);
-        lv_obj_set_style_text_font(sw_peak_label, &lv_font_montserrat_36, 0);
 
         // Right column — run history
         lv_obj_t * sw_lbl_hist_title = lv_label_create(panel_stopwatch);
@@ -415,20 +440,45 @@ namespace UI {
 
     // ── Stopwatch display update (called every frame in stopwatch mode) ─────
     void updateStopwatchDisplay() {
-        if (!sw_timer_label) return;
+        if (!sw_values_canvas) return;
         int64_t ms  = Stopwatch_Manager::elapsedMs();
         int     min = (int)(ms / 60000);
         int     sec = (int)((ms % 60000) / 1000);
         int     cs  = (int)((ms % 1000) / 10);
 
-        // Skip re-formatting/redrawing labels whose displayed text hasn't actually
-        // changed — this loop runs at ~100-200Hz and un-throttled lv_label_set_text_fmt
-        // calls (each forces a re-layout + invalidate) were starving the LVGL render
-        // task of its mutex, causing the visible "jumpy" multi-second skips.
         static int lastMin = -1, lastSec = -1, lastCs = -1;
-        if (min != lastMin || sec != lastSec || cs != lastCs) {
-            lastMin = min; lastSec = sec; lastCs = cs;
-            lv_label_set_text_fmt(sw_timer_label, "%02d:%02d.%02d", min, sec, cs);
+        static int lastCurSP = -1, lastPeakSP = -1;
+        int curSP  = (int)Stopwatch_Manager::currentSP;
+        int peakSP = (int)Stopwatch_Manager::peakSP;
+        if (min != lastMin || sec != lastSec || cs != lastCs ||
+            curSP != lastCurSP || peakSP != lastPeakSP) {
+            lastMin = min;
+            lastSec = sec;
+            lastCs = cs;
+            lastCurSP = curSP;
+            lastPeakSP = peakSP;
+
+            lv_draw_label_dsc_t label_dsc;
+            lv_draw_label_dsc_init(&label_dsc);
+            label_dsc.color = lv_color_white();
+            lv_canvas_fill_bg(sw_values_canvas, lv_color_black(), LV_OPA_COVER);
+
+            char value[16];
+            label_dsc.font = &lv_font_montserrat_36;
+            snprintf(value, sizeof(value), "%d SP", curSP);
+            lv_canvas_draw_text(sw_values_canvas, 0, 0, SW_VALUES_CANVAS_WIDTH,
+                                &label_dsc, value);
+
+            label_dsc.font = &lv_font_montserrat_48;
+            snprintf(value, sizeof(value), "%02d:%02d.%02d", min, sec, cs);
+            lv_canvas_draw_text(sw_values_canvas, 0, 58, SW_VALUES_CANVAS_WIDTH,
+                                &label_dsc, value);
+
+            label_dsc.font = &lv_font_montserrat_36;
+            label_dsc.color = lv_palette_main(LV_PALETTE_AMBER);
+            snprintf(value, sizeof(value), "%d SP", peakSP);
+            lv_canvas_draw_text(sw_values_canvas, 0, 152, SW_VALUES_CANVAS_WIDTH,
+                                &label_dsc, value);
         }
 
         static int lastArcSec = -1;
@@ -436,18 +486,11 @@ namespace UI {
             lastArcSec = sec;
             lv_label_set_text_fmt(sw_arc_sec_label, "%d", sec);
         }
-        lv_arc_set_value(sw_arc, (int32_t)((ms % 60000) * 360 / 60000));
-
-        static int lastCurSP = -1, lastPeakSP = -1;
-        int curSP  = (int)Stopwatch_Manager::currentSP;
-        int peakSP = (int)Stopwatch_Manager::peakSP;
-        if (curSP != lastCurSP) {
-            lastCurSP = curSP;
-            lv_label_set_text_fmt(sw_cur_sp_label, "%d SP", curSP);
-        }
-        if (peakSP != lastPeakSP) {
-            lastPeakSP = peakSP;
-            lv_label_set_text_fmt(sw_peak_label, "%d SP", peakSP);
+        int arcValue = (int)((ms % 60000) * 360 / 60000);
+        static int lastArcValue = -1;
+        if (arcValue != lastArcValue) {
+            lastArcValue = arcValue;
+            lv_arc_set_value(sw_arc, arcValue);
         }
 
         static int lastRunCount = -1;
@@ -520,12 +563,10 @@ namespace UI {
 
     void handleUpdate() {
         if (Stopwatch_Manager::isStopwatchMode) {
-            // Cap stopwatch UI redraws at 20 Hz — the loop runs much faster and
-            // hammering lv_label_set_text every iteration starves the render task.
-            static unsigned long lastSwUpdate = 0;
+            static unsigned long lastSwFrameMs = 0;
             unsigned long now = millis();
-            if (now - lastSwUpdate >= 50) {
-                lastSwUpdate = now;
+            if (now - lastSwFrameMs >= 20) {
+                lastSwFrameMs = now;
                 updateStopwatchDisplay();
             }
             return;
