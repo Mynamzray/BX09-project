@@ -101,15 +101,20 @@ if (header == 0xA0) {
 
     // Only trust complete frames ending in the device-ID suffix — truncated
     // BLE/USB-CDC fragments can alias garbage bytes into stateByte otherwise.
-    bool hasDeviceSuffix = false;
-    for (size_t i = 0; i + 4 < length; i++) {
-        if (pData[i]==0x58 && pData[i+1]==0x04 && pData[i+2]==0x51 &&
-            pData[i+3]==0xC4 && pData[i+4]==0xDA) {
-            hasDeviceSuffix = true; break;
-        }
-    }
+bool hasStatusTail = length >= 17 &&
+                     pData[length - 4] == 0x04 &&
+                     pData[length - 3] == 0x51 &&
+                     pData[length - 2] == 0xC4 &&
+                     pData[length - 1] == 0xDA;
 
-    if (length >= 4 && hasDeviceSuffix) {
+if (hasStatusTail) {
+    uint8_t stateByte = pData[3];
+    bool isAttachedNow = (stateByte & 0x04) != 0;
+    bool isButtonModeOn = (stateByte & 0x10) != 0;
+
+}
+
+if (hasStatusTail) {
         uint8_t stateByte = pData[3];
         bool isAttachedNow = (stateByte & 0x04) > 0;
         bool isButtonModeOn = (stateByte & 0x10) > 0;

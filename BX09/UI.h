@@ -112,7 +112,7 @@ namespace UI {
         }
         
         lv_label_set_text_fmt(label_battery, "%d%% (%d.%dV) %s", percentage,
-                      voltageTenths / 10, voltageTenths % 10, symbol);
+              voltageTenths / 10, voltageTenths % 10, symbol);
     } 
 
     void updateCurrentRPM(int target_rpm) {

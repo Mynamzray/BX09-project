@@ -16,7 +16,13 @@ namespace UI {
 namespace Battery_Manager {
     const int BAT_ADC_PIN = 4; 
     unsigned long lastCheckTime = 0;
-    const unsigned long checkInterval = 2000; 
+    const unsigned long checkInterval = 2000;
+    const uint8_t ADC_SAMPLE_COUNT = 16;
+    // Heuristic based on this board's displayed readings: approximately 4.2V
+    // when full and unplugged, and 4.3-4.4V while USB charging.
+    const uint8_t CHARGE_CONFIRM_SAMPLES = 3;
+    const float CHARGE_START_MV = 4300.0f;
+    const float CHARGE_STOP_MV = 4230.0f;
 
     float filtered_mV = 0; 
     int lastPercentage = -1;
@@ -30,10 +36,13 @@ namespace Battery_Manager {
         uint8_t percentage;
     };
 
-    // 1S Li-ion starting curve (light load). Tune values with your own battery data.
+    // 1S Li-ion estimate under a light load. Terminal voltage rises while charging,
+    // so this remains an estimate until a charger-status GPIO is available.
     static constexpr BatteryPoint BATTERY_CURVE[] = {
-        {4200, 100}, {4100, 90}, {4000, 75}, {3900, 55},
-        {3800, 35}, {3700, 15}, {3500, 5}, {3300, 0},
+        {4200, 100}, {4150, 98}, {4100, 92}, {4050, 85},
+        {4000, 75}, {3950, 65}, {3900, 55}, {3850, 45},
+        {3800, 35}, {3750, 25}, {3700, 15}, {3650, 10},
+        {3500, 5}, {3300, 0},
     };
 
     int getBatteryPercentage(float millivolts) {
@@ -52,14 +61,34 @@ namespace Battery_Manager {
         return 0;
     }
 
+    bool updateChargingStatus(float current_mV) {
+        static uint8_t chargingSamples = 0;
+        static uint8_t dischargingSamples = 0;
+
+        if (current_mV >= CHARGE_START_MV) {
+            if (chargingSamples < CHARGE_CONFIRM_SAMPLES) chargingSamples++;
+            dischargingSamples = 0;
+        } else if (current_mV <= CHARGE_STOP_MV) {
+            if (dischargingSamples < CHARGE_CONFIRM_SAMPLES) dischargingSamples++;
+            chargingSamples = 0;
+        } else {
+            chargingSamples = 0;
+            dischargingSamples = 0;
+        }
+
+        if (chargingSamples >= CHARGE_CONFIRM_SAMPLES) return true;
+        if (dischargingSamples >= CHARGE_CONFIRM_SAMPLES) return false;
+        return isCharging;
+    }
+
     void init() {
         pinMode(BAT_ADC_PIN, INPUT);
         
         uint32_t raw_sum = 0;
-        for(int i = 0; i < 20; i++) {
+        for (int i = 0; i < ADC_SAMPLE_COUNT; i++) {
             raw_sum += analogReadMilliVolts(BAT_ADC_PIN) * 2;
         }
-        filtered_mV = (raw_sum / 20.0) * CALIBRATION_FACTOR;
+        filtered_mV = (raw_sum / (float)ADC_SAMPLE_COUNT) * CALIBRATION_FACTOR;
         
         int boot_pct = getBatteryPercentage(filtered_mV);
         
@@ -89,21 +118,16 @@ namespace Battery_Manager {
             lastCheckTime = millis();
 
             uint32_t raw_sum = 0;
-            for(int i = 0; i < 10; i++) {
+            for (int i = 0; i < ADC_SAMPLE_COUNT; i++) {
                 raw_sum += analogReadMilliVolts(BAT_ADC_PIN) * 2;
             }
-            float current_mV = (raw_sum / 10.0) * CALIBRATION_FACTOR;
+            float current_mV = (raw_sum / (float)ADC_SAMPLE_COUNT) * CALIBRATION_FACTOR;
             if (filtered_mV == 0) filtered_mV = current_mV;
 
-            // EMA 濾波器
-            filtered_mV = (0.1 * current_mV) + (0.9 * filtered_mV);
+            // Favor stability; each update represents two seconds of samples.
+            filtered_mV = (0.08f * current_mV) + (0.92f * filtered_mV);
 
-            // Voltage-based fallback with hysteresis. Prefer charger-status GPIO if available.
-            if (current_mV >= 4180) {
-                isCharging = true;
-            } else if (current_mV <= 4100) {
-                isCharging = false;
-            }
+            isCharging = updateChargingStatus(current_mV);
 
             int currentPercentage = getBatteryPercentage(filtered_mV);
             if (isCharging || lastPercentage < 0) {
