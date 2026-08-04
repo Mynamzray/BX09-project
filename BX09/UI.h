@@ -71,6 +71,7 @@ namespace UI {
     lv_obj_t * sw_time_label;
 
     static int current_displayed_rpm = 0;
+    static int current_displayed_sw_sp = 0;
 
     static void anim_text_update_cb(void * var, int32_t v) {
         lv_obj_t * label = (lv_obj_t *)var;
@@ -130,6 +131,22 @@ namespace UI {
         current_displayed_rpm = target_rpm;
     }    
 
+    void updateStopwatchCurrentSP(int target_sp) {
+        if (!sw_cur_sp_val) return;
+        if (current_displayed_sw_sp == target_sp) return;
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, sw_cur_sp_val);
+        lv_anim_set_values(&a, current_displayed_sw_sp, target_sp);
+        lv_anim_set_time(&a, 500);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_exec_cb(&a, anim_text_update_cb);
+        lv_anim_start(&a);
+
+        current_displayed_sw_sp = target_sp;
+    }
+
     void updateChartCurve(uint16_t* turnData, int turnCount) {
         if (!chart || !chart_series || turnCount <= 0) return;
 
@@ -153,6 +170,9 @@ namespace UI {
 
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount) {
         updateCurrentRPM(origSP);
+        
+        // Pass official launch SP to Stopwatch_Manager if active
+        Stopwatch_Manager::updateSP(origSP);
 
         bool hasNewAllTimeBest = origSP > global_all_time_best;
         if (hasNewAllTimeBest) {
@@ -193,10 +213,10 @@ namespace UI {
             prefs.getBytes("sw_time", global_sw_history_time, sizeof(global_sw_history_time));
             prefs.getBytes("sw_sp", global_sw_history_sp, sizeof(global_sw_history_sp));
             
-            // Populate Stopwatch_Manager internal history array
             Stopwatch_Manager::runCount = global_sw_hist_count;
             for (int i = 0; i < global_sw_hist_count && i < 8; i++) {
                 Stopwatch_Manager::runHistory[i] = global_sw_history_time[i];
+                Stopwatch_Manager::runPeakSP[i]  = (uint16_t)global_sw_history_sp[i];
             }
         }
         prefs.end();
@@ -352,7 +372,7 @@ namespace UI {
         lv_obj_set_style_text_color(sw_longest_spin_val, lv_palette_main(LV_PALETTE_AMBER), 0);
         lv_obj_set_style_text_font(sw_longest_spin_val, &lv_font_montserrat_36, 0);
 
-        // Middle Column — Instrument Arc & Hero Timer (00:00 ohne CS)
+        // Middle Column — Instrument Arc & Hero Timer
         sw_run_label = lv_label_create(panel_stopwatch);
         lv_label_set_text(sw_run_label, "Run: 0");
         lv_obj_align(sw_run_label, LV_ALIGN_TOP_LEFT, 280, 58);
@@ -369,22 +389,22 @@ namespace UI {
         lv_arc_set_mode(sw_arc, LV_ARC_MODE_NORMAL);
         lv_obj_clear_flag(sw_arc, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_MAIN);
-        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x1C1C1E), LV_PART_MAIN); // Apple dark track
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x1C1C1E), LV_PART_MAIN);
         lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_INDICATOR);
-        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x00E5FF), LV_PART_INDICATOR); // Vibrant Cyan ring
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
         lv_obj_set_style_width(sw_arc, 0, LV_PART_KNOB);
         lv_obj_set_style_height(sw_arc, 0, LV_PART_KNOB);
         lv_obj_set_style_pad_all(sw_arc, 0, LV_PART_KNOB);
         lv_obj_set_style_bg_opa(sw_arc, LV_OPA_TRANSP, LV_PART_KNOB);
         lv_obj_set_style_border_width(sw_arc, 0, LV_PART_KNOB);
 
-        // Centered Hero Timer (00:00 without milliseconds)
+        // Centered Hero Timer
         sw_time_label = lv_label_create(panel_stopwatch);
         lv_label_set_text(sw_time_label, "00:00");
         lv_obj_set_width(sw_time_label, 190);
         lv_obj_align(sw_time_label, LV_ALIGN_TOP_LEFT, 280, 162);
         lv_obj_set_style_text_align(sw_time_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(sw_time_label, &lv_font_montserrat_48, 0); // Prominent 48pt timer
+        lv_obj_set_style_text_font(sw_time_label, &lv_font_montserrat_48, 0);
 
         // Right Column — Run History
         lv_obj_t * sw_lbl_hist_title = lv_label_create(panel_stopwatch);
@@ -399,16 +419,18 @@ namespace UI {
         lv_obj_set_style_text_font(sw_hist_label, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_line_space(sw_hist_label, 4, 0);
 
-        // Populate history text from NVS if available
+        // Populate history text on boot (NEWEST/LATEST RUN AT TOP)
         if (global_sw_hist_count > 0) {
             char histText[384];
             size_t pos = 0;
-            for (int i = 0; i < global_sw_hist_count && i < 6 && pos < sizeof(histText) - 48; i++) {
+            int total = global_sw_hist_count;
+            int displayNum = total;
+            for (int i = total - 1; i >= 0 && displayNum > (total > 6 ? total - 6 : 0); i--) {
                 uint32_t rm = global_sw_history_time[i] / 60000;
                 uint32_t rs = (global_sw_history_time[i] % 60000) / 1000;
                 uint32_t sp = global_sw_history_sp[i];
                 pos += snprintf(histText + pos, sizeof(histText) - pos,
-                                 "%d. %02u:%02u • %u SP\n", i + 1, rm, rs, sp);
+                                 "%d. %02u:%02u • %u SP\n", displayNum--, rm, rs, sp);
             }
             lv_label_set_text(sw_hist_label, histText);
         }
@@ -479,7 +501,6 @@ namespace UI {
         int     min = (int)(ms / 60000);
         int     sec = (int)((ms % 60000) / 1000);
 
-        // Update timer MM:SS without milliseconds
         static int lastMin = -1, lastSec = -1;
         if (min != lastMin || sec != lastSec) {
             lastMin = min;
@@ -487,58 +508,84 @@ namespace UI {
             lv_label_set_text_fmt(sw_time_label, "%02d:%02d", min, sec);
         }
 
+        // Animated Rolling Number for Current SP (Just like Normal Mode!)
         int curSP = (int)Stopwatch_Manager::currentSP;
+        updateStopwatchCurrentSP(curSP);
 
-        static int lastCurSP = -1;
-        if (curSP != lastCurSP) {
-            lastCurSP = curSP;
-            lv_label_set_text_fmt(sw_cur_sp_val, "%d SP", curSP);
+        // Synchronize with Stopwatch_Manager run records & peak SP
+        int total = Stopwatch_Manager::runCount;
+        if (total > 0 && total <= 8) {
+            for (int i = 0; i < total; i++) {
+                global_sw_history_time[i] = Stopwatch_Manager::runHistory[i];
+                
+                // Read exact Peak SP saved by Stopwatch_Manager or live current SP
+                uint32_t effectiveSP = (uint32_t)Stopwatch_Manager::runPeakSP[i];
+                if (effectiveSP == 0 && (uint32_t)Stopwatch_Manager::peakSP > 0) {
+                    effectiveSP = (uint32_t)Stopwatch_Manager::peakSP;
+                }
+                if (effectiveSP == 0 && curSP > 0) {
+                    effectiveSP = (uint32_t)curSP;
+                }
+                
+                if (effectiveSP > global_sw_history_sp[i]) {
+                    global_sw_history_sp[i] = effectiveSP;
+                    Stopwatch_Manager::runPeakSP[i] = (uint16_t)effectiveSP;
+                }
+
+                if (global_sw_history_time[i] > global_sw_longest_spin) {
+                    global_sw_longest_spin = global_sw_history_time[i];
+                }
+            }
+            global_sw_hist_count = total;
         }
 
-        // Detect new run completion and persist to NVS
         static int lastRunCount = -1;
         bool runCountChanged = (Stopwatch_Manager::runCount != lastRunCount);
         if (runCountChanged) {
             lastRunCount = Stopwatch_Manager::runCount;
-            int total = Stopwatch_Manager::runCount;
             
-            // Record current run peak SP into history array
-            if (total > 0 && total <= 8) {
-                int idx = total - 1;
-                global_sw_history_time[idx] = Stopwatch_Manager::runHistory[idx];
-                global_sw_history_sp[idx]   = (uint32_t)Stopwatch_Manager::peakSP;
-                global_sw_hist_count        = total;
-
-                // Update Longest Spin record
-                if (global_sw_history_time[idx] > global_sw_longest_spin) {
-                    global_sw_longest_spin = global_sw_history_time[idx];
-                }
-
-                // Persist updated records to NVS Flash memory
-                saveStopwatchNVS();
-            }
+            // Persist new run data to NVS Flash memory
+            saveStopwatchNVS();
 
             char runBuf[16];
             snprintf(runBuf, sizeof(runBuf), "Run: %d", Stopwatch_Manager::runCount);
             lv_label_set_text(sw_run_label, runBuf);
-
-            // Format Run History with Apple design standards: "1. 05:00 • 69520 SP"
-            if (total > 0) {
-                char histText[384];
-                size_t pos = 0;
-                int start = (total > 6) ? (total - 6) : 0;
-                for (int i = start; i < total && pos < sizeof(histText) - 48; i++) {
-                    uint32_t rm = global_sw_history_time[i] / 60000;
-                    uint32_t rs = (global_sw_history_time[i] % 60000) / 1000;
-                    uint32_t sp = global_sw_history_sp[i];
-                    pos += snprintf(histText + pos, sizeof(histText) - pos,
-                                     "%d. %02u:%02u • %u SP\n", i + 1, rm, rs, sp);
-                }
-                lv_label_set_text(sw_hist_label, histText);
-            }
         }
 
-        // Update Longest Spin label
+        // Live update of active run in Run History alongside the timer!
+        if (total > 0) {
+            char histText[384];
+            size_t pos = 0;
+            int displayNum = total;
+            for (int i = total - 1; i >= 0 && displayNum > (total > 6 ? total - 6 : 0); i--) {
+                uint32_t runTimeMs = global_sw_history_time[i];
+                // Active run line updates live along with timer during RUNNING or ARMED state!
+                if (i == total - 1 && (Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING || Stopwatch_Manager::state == Stopwatch_Manager::State::ARMED)) {
+                    runTimeMs = (uint32_t)ms;
+                }
+                
+                uint32_t rm = runTimeMs / 60000;
+                uint32_t rs = (runTimeMs % 60000) / 1000;
+                uint32_t sp = global_sw_history_sp[i];
+                
+                // Ensure active run displays live SP during launch
+                if (i == total - 1 && (sp == 0 || Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING)) {
+                    uint32_t activeSP = (uint32_t)Stopwatch_Manager::peakSP;
+                    if (activeSP == 0) activeSP = (uint32_t)curSP;
+                    if (activeSP > sp) {
+                        sp = activeSP;
+                        global_sw_history_sp[i] = activeSP;
+                        Stopwatch_Manager::runPeakSP[i] = (uint16_t)activeSP;
+                    }
+                }
+
+                pos += snprintf(histText + pos, sizeof(histText) - pos,
+                                 "%d. %02u:%02u • %u SP\n", displayNum--, rm, rs, sp);
+            }
+            lv_label_set_text(sw_hist_label, histText);
+        }
+
+        // Update Longest Spin record display
         static uint32_t lastLongestMs = 0xFFFFFFFF;
         if (global_sw_longest_spin != lastLongestMs) {
             lastLongestMs = global_sw_longest_spin;
@@ -604,6 +651,19 @@ namespace UI {
 
     void handleUpdate() {
         if (Stopwatch_Manager::isStopwatchMode) {
+            // Live capture of launcher RPM into Stopwatch_Manager during active BLE updates
+            if (BLE_Manager::liveCurveCount > 0) {
+                uint16_t maxLiveRpm = 0;
+                for (int i = 0; i < BLE_Manager::liveCurveCount; i++) {
+                    if (BLE_Manager::liveCurveBuffer[i] > maxLiveRpm && BLE_Manager::liveCurveBuffer[i] < 18000) {
+                        maxLiveRpm = BLE_Manager::liveCurveBuffer[i];
+                    }
+                }
+                if (maxLiveRpm > 0) {
+                    Stopwatch_Manager::updateSP(maxLiveRpm);
+                }
+            }
+
             static unsigned long lastSwFrameMs = 0;
             unsigned long now = millis();
             if (now - lastSwFrameMs >= 20) {
