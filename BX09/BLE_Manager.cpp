@@ -1,24 +1,15 @@
 #include "BLE_Manager.h"
 #include "Web_Manager.h"
+#include <Preferences.h>
 #include "lvgl_port.h"
 #include "Stopwatch_Manager.h"
-#include <Preferences.h>
 #include <WiFi.h>
-
-// ── BX-09 UUID constants ─────────────────────────────────────────────────────
-// Step 1: Flash with CAPTURE_UUIDS=1, open Serial Monitor, connect once, copy
-//         all "[UUID]" lines. Confirm BX09_SERVICE_UUID and fill in char UUIDs.
-// Step 2: Set CAPTURE_UUIDS=0 for direct O(1) lookups on every reconnect.
-#define CAPTURE_UUIDS 1
-static const char* BX09_SERVICE_UUID     = "5c40000-f8eb-11ec-b939-0242ac120002";  // TODO: confirm leading hex digit
-static const char* BX09_NOTIFY_CHAR_UUID = "";  // TODO: fill from capture output
-static const char* BX09_READ_CHAR_UUID   = "";  // TODO: fill from capture output
 
 namespace UI {
     extern volatile bool readyToDraw;
     void updateStatus(int state);
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount); 
-    void updateChartCurve(uint16_t* turnData, int turnCount);
+    void updateChartCurve(uint16_t* turnData, int turnCount); // 🟢 引入即時繪圖函數
     void enterStopwatchMode();
     void exitStopwatchMode();
 }
@@ -39,6 +30,7 @@ namespace BLE_Manager {
 
     static uint8_t historyPackets[7][20];
 
+    // 🟢 修正：移除 static，讓 UI 模組可以在主執行緒安全地讀取它們
     uint16_t liveCurveBuffer[32];
     int liveCurveCount = 0;
 
@@ -50,7 +42,6 @@ namespace BLE_Manager {
     }
 
     void toggleBluetooth() {
-        if (Stopwatch_Manager::isStopwatchMode) { Stopwatch_Manager::stop(); return; }
         isSystemEnabled = !isSystemEnabled; 
         if (!isSystemEnabled) {
             Serial.println("🛑 [系統] 藍牙雷達已手動休眠");
@@ -67,10 +58,7 @@ namespace BLE_Manager {
             current_ui_state = 3; 
             if (current_ui_state != last_ui_state) {
                 last_ui_state = current_ui_state;
-                if (example_lvgl_lock(100)) {
-                    UI::updateStatus(current_ui_state);
-                    example_lvgl_unlock();
-                }
+                UI::updateStatus(current_ui_state);
                 
                 #if ENABLE_WEB_DASHBOARD
                 Preferences tempPrefs;
@@ -93,44 +81,26 @@ namespace BLE_Manager {
         if (length == 0) return;
         uint8_t header = pData[0];
 
-if (header == 0xA0) {
-    Serial.print("[BLE 系統狀態攔截] ");
-    for (size_t i = 0; i < length; i++) { Serial.printf("%02X ", pData[i]); }
-    Serial.println(); 
+        if (header == 0xA0) {
+            Serial.print("[BLE 系統狀態攔截] ");
+            for (size_t i = 0; i < length; i++) { Serial.printf("%02X ", pData[i]); }
+            Serial.println(); 
 
-    // Only trust complete frames ending in the device-ID suffix — truncated
-    // BLE/USB-CDC fragments can alias garbage bytes into stateByte otherwise.
-bool hasStatusTail = length >= 17 &&
-                     pData[length - 4] == 0x04 &&
-                     pData[length - 3] == 0x51 &&
-                     pData[length - 2] == 0xC4 &&
-                     pData[length - 1] == 0xDA;
+            if (length >= 4) {
+                uint8_t stateByte = pData[3];
+                bool isAttachedNow = (stateByte & 0x04) > 0;
+                bool isButtonModeOn = (stateByte & 0x10) > 0;
 
-if (hasStatusTail) {
-    uint8_t stateByte = pData[3];
-    bool isAttachedNow = (stateByte & 0x04) != 0;
-    bool isButtonModeOn = (stateByte & 0x10) != 0;
-
-}
-
-if (hasStatusTail) {
-        uint8_t stateByte = pData[3];
-        bool isAttachedNow = (stateByte & 0x04) > 0;
-        bool isButtonModeOn = (stateByte & 0x10) > 0;
-
-        if (isAttachedNow && !isBeyInstalled) {
-            Serial.println("\n[狀態] 🟢 陀螺已安裝");
-            isBeyInstalled = true; 
-            liveCurveCount = 0;
-            Stopwatch_Manager::arm();
-        } 
-        else if (!isAttachedNow && isBeyInstalled) {
-            Serial.println("\n[狀態] 🟡 陀螺離開發射器 — 計時開始");
-            isBeyInstalled = false; 
-            Stopwatch_Manager::start();   // this bit-clear IS the real launch event
-        }
-
-        static bool lastButtonMode = false;
+                if (isAttachedNow && !isBeyInstalled) {
+                    Serial.println("\n[狀態] 🟢 陀螺已安裝");
+                    isBeyInstalled = true; 
+                    liveCurveCount = 0; // 重置發射曲線陣列
+                } 
+                else if (!isAttachedNow && isBeyInstalled) {
+                    Serial.println("\n[狀態] 🟡 陀螺已手動拔除");
+                    isBeyInstalled = false; 
+                }
+                        static bool lastButtonMode = false;
         if (isButtonModeOn && !lastButtonMode) {
             Serial.println("\n🕹️ [秒錶] 雙擊切換秒錶模式");
             Stopwatch_Manager::toggleMode();
@@ -146,6 +116,7 @@ if (hasStatusTail) {
         lastButtonMode = isButtonModeOn;
     }
 }
+
         else if (header >= 0xB0 && header <= 0xB6) {
             int packet_index = header - 0xB0; 
             
@@ -183,34 +154,31 @@ if (hasStatusTail) {
                     #if ENABLE_WEB_DASHBOARD
                     Web_Manager::broadcastOfficialHistory(origSP, officialHistory, histCount);
                     #endif
-
-                    if (example_lvgl_lock(100)) {
-                        UI::updateOfficialData(origSP, officialHistory, histCount);
-                        example_lvgl_unlock();
-                    }
+                    UI::updateOfficialData(origSP, officialHistory, histCount);
                 }
             }
         }
         else if (header == 0x70) {
             if (isBeyInstalled) { 
-                Stopwatch_Manager::start();   // fire first — lowest possible latency
-                isBeyInstalled = false;
                 Serial.println("\n[狀態] 🟡 陀螺已拔除 (收到系統靜止碼 0x70)");
+                isBeyInstalled = false; 
             }
         }
         else if (header >= 0x71 && header <= 0x73) {
+            // 🟢 修正 1：陣列索引必須從 1 開始！(修復位元錯位導致的亂碼與空圖表)
             for (int i = 1; i < (int)length - 1; i += 2) {
                 uint16_t rawTick = pData[i] | (pData[i+1] << 8);
                 if (rawTick > 0 && liveCurveCount < 32) {
                     uint32_t rpm = 7500000UL / rawTick;
+                    // 基本過濾：剔除破表雜訊
                     if (rpm > 500 && rpm < 18000) {
                         liveCurveBuffer[liveCurveCount++] = (uint16_t)rpm;
-                        Stopwatch_Manager::updateSP((uint16_t)rpm);
                     }
                 }
             }
 
             if (header == 0x73) {
+                // 🟢 修正 2：絕不在 BLE 執行緒中畫圖，只立旗標交給 UI 主迴圈處理 (防止 RTOS 衝突)
                 UI::readyToDraw = true; 
             }
         }
@@ -226,9 +194,9 @@ if (hasStatusTail) {
         pBLEScan = NimBLEDevice::getScan();
         pBLEScan->setScanCallbacks(new AdvertisedDeviceCallbacks());
         pBLEScan->setActiveScan(true);
-        pBLEScan->setInterval(40);
-        pBLEScan->setWindow(40);
-        NimBLEDevice::setPower(ESP_PWR_LVL_P3);
+        pBLEScan->setInterval(100);
+        pBLEScan->setWindow(50); 
+        NimBLEDevice::setPower(ESP_PWR_LVL_P9);
     }
 
     void connectTask() {
@@ -240,10 +208,7 @@ if (hasStatusTail) {
 
         if (current_ui_state != last_ui_state) {
             last_ui_state = current_ui_state;
-            if (example_lvgl_lock(100)) {
-                UI::updateStatus(current_ui_state);
-                example_lvgl_unlock();
-            }
+            UI::updateStatus(current_ui_state);
             
             #if ENABLE_WEB_DASHBOARD
             Preferences tempPrefs;
@@ -264,79 +229,52 @@ if (hasStatusTail) {
 
         if (doConnect) {
             doConnect = false;
-
-            // client is always nullptr here — the previous client (if any) was already
-            // deleted from onDisconnect() once NimBLE had fully torn it down. Creating
-            // fresh avoids reusing/deleting a client the host task may still reference.
             client = NimBLEDevice::createClient();
-
-            static ClientCallback* sharedClientCallback = nullptr;
-            if (sharedClientCallback == nullptr) {
-                sharedClientCallback = new ClientCallback();
-            }
-            client->setClientCallbacks(sharedClientCallback);
-
+            client->setClientCallbacks(new ClientCallback());
+            
             Serial.println(">>> 嘗試與目標裝置建立連線... <<<");
-            if (client->connect(*targetAddress, true)) {  // always refresh attr cache — client is always fresh
+            if (client->connect(*targetAddress)) {
                 isConnected = true;
                 Serial.println(">>> 藍牙連線成功！優化通訊頻寬 (7.5ms - 15ms) <<<");
                 client->updateConnParams(6, 12, 0, 100);
                 NimBLEDevice::setPower(ESP_PWR_LVL_P9);
-
-                #if CAPTURE_UUIDS
-                // Walk every service/char and print UUIDs — copy output, fill constants above, set CAPTURE_UUIDS=0
-                for (auto* svc : client->getServices(true)) {
-                    Serial.printf("[UUID] Service: %s\n", svc->getUUID().toString().c_str());
-                    for (auto* chr : svc->getCharacteristics(true)) {
-                        Serial.printf("[UUID]   Char: %s (notify=%d read=%d)\n",
-                            chr->getUUID().toString().c_str(), chr->canNotify(), chr->canRead());
-                        if (chr->canNotify()) chr->subscribe(true, notifyCallback, false);
-                        if (chr->canRead()) {
-                            std::string val = chr->readValue();
-                            if (val.length() > 0) {
-                                uint8_t header = (uint8_t)val[0];
-                                if (header >= 0xB0 && header <= 0xB6)
-                                    notifyCallback(chr, (uint8_t*)val.data(), val.length(), false);
+                
+                auto services = client->getServices(true);
+                if (!services.empty()) {
+                    for (auto* svc : services) {
+                        auto chars = svc->getCharacteristics(true); 
+                        if (!chars.empty()) {                       
+                            for (auto* chr : chars) {               
+                                if (chr->canNotify()) {
+                                    chr->subscribe(true, notifyCallback, false);
+                                }
+                                
+                                if (chr->canRead()) {
+                                    std::string val = chr->readValue();
+                                    if (val.length() > 0) {
+                                        uint8_t header = (uint8_t)val[0];
+                                        if (header >= 0xB0 && header <= 0xB6) {
+                                            notifyCallback(chr, (uint8_t*)val.data(), val.length(), false);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-                #else
-                // Direct O(1) lookups — no round-trips per service/characteristic
-                NimBLERemoteService* svc = client->getService(BX09_SERVICE_UUID);
-                if (svc != nullptr) {
-                    NimBLERemoteCharacteristic* notifyChar = svc->getCharacteristic(BX09_NOTIFY_CHAR_UUID);
-                    if (notifyChar != nullptr && notifyChar->canNotify())
-                        notifyChar->subscribe(true, notifyCallback, false);
-                    NimBLERemoteCharacteristic* readChar = svc->getCharacteristic(BX09_READ_CHAR_UUID);
-                    if (readChar != nullptr && readChar->canRead()) {
-                        std::string val = readChar->readValue();
-                        if (val.length() > 0) {
-                            uint8_t header = (uint8_t)val[0];
-                            if (header >= 0xB0 && header <= 0xB6)
-                                notifyCallback(readChar, (uint8_t*)val.data(), val.length(), false);
-                        }
-                    }
-                }
-                #endif
             } else {
                 Serial.println("❌ 連線失敗");
                 isScanning = false;
             }
         }
     }
-} // namespace BLE_Manager
+}
 
 void ClientCallback::onDisconnect(NimBLEClient* pClient, int reason) {
     BLE_Manager::isConnected = false;
     BLE_Manager::isBeyInstalled = false;
     BLE_Manager::current_ui_state = 0;
     Serial.printf("!!! BX-09 斷開連線 (Reason: %d) ...\n", reason);
-
-    // Safe to delete here — NimBLE only fires onDisconnect after this client's
-    // teardown is fully processed, unlike deleting from the main loop on a timer.
-    NimBLEDevice::deleteClient(pClient);
-    BLE_Manager::client = nullptr;
     
     #if ENABLE_WEB_DASHBOARD
     Preferences tempPrefs;
@@ -351,7 +289,7 @@ void ClientCallback::onDisconnect(NimBLEClient* pClient, int reason) {
 
 void AdvertisedDeviceCallbacks::onResult(const NimBLEAdvertisedDevice* advertisedDevice) {
     if (advertisedDevice->haveServiceUUID()) {
-        if (advertisedDevice->getServiceUUID().toString().find(BX09_SERVICE_UUID) != std::string::npos) {
+        if (advertisedDevice->getServiceUUID().toString().find("5c40000-f8eb-11ec-b939-0242ac120002") != std::string::npos) {
             Serial.println("\n✅ 發現 BX-09！鎖定目標...");
             NimBLEDevice::getScan()->stop();
             BLE_Manager::isScanning = false;
