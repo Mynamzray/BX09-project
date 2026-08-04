@@ -42,6 +42,11 @@ namespace BLE_Manager {
     }
 
     void toggleBluetooth() {
+        if (Stopwatch_Manager::isStopwatchMode) {
+            Stopwatch_Manager::stop();
+            return;
+        }
+
         isSystemEnabled = !isSystemEnabled; 
         if (!isSystemEnabled) {
             Serial.println("🛑 [系統] 藍牙雷達已手動休眠");
@@ -86,36 +91,45 @@ namespace BLE_Manager {
             for (size_t i = 0; i < length; i++) { Serial.printf("%02X ", pData[i]); }
             Serial.println(); 
 
-            if (length >= 4) {
+            // The byte before this shared tail differs between BX09 units.
+            bool hasStatusTail = length >= 17 &&
+                                 pData[length - 4] == 0x04 &&
+                                 pData[length - 3] == 0x51 &&
+                                 pData[length - 2] == 0xC4 &&
+                                 pData[length - 1] == 0xDA;
+            if (hasStatusTail) {
                 uint8_t stateByte = pData[3];
-                bool isAttachedNow = (stateByte & 0x04) > 0;
-                bool isButtonModeOn = (stateByte & 0x10) > 0;
+                bool isAttachedNow = (stateByte & 0x04) != 0;
+                bool isButtonModeOn = (stateByte & 0x10) != 0;
 
                 if (isAttachedNow && !isBeyInstalled) {
                     Serial.println("\n[狀態] 🟢 陀螺已安裝");
-                    isBeyInstalled = true; 
-                    liveCurveCount = 0; // 重置發射曲線陣列
+                    isBeyInstalled = true;
+                    liveCurveCount = 0;
+                    Stopwatch_Manager::arm();
                 } 
                 else if (!isAttachedNow && isBeyInstalled) {
-                    Serial.println("\n[狀態] 🟡 陀螺已手動拔除");
-                    isBeyInstalled = false; 
+                    Serial.println("\n[狀態] 🟡 陀螺已手動拔除 — 計時開始");
+                    isBeyInstalled = false;
+                    Stopwatch_Manager::start();
                 }
-                        static bool lastButtonMode = false;
-        if (isButtonModeOn && !lastButtonMode) {
-            Serial.println("\n🕹️ [秒錶] 雙擊切換秒錶模式");
-            Stopwatch_Manager::toggleMode();
-            if (Stopwatch_Manager::isStopwatchMode && isBeyInstalled) {
-                Stopwatch_Manager::arm();
-            }
-            if (example_lvgl_lock(100)) {
-                if (Stopwatch_Manager::isStopwatchMode) UI::enterStopwatchMode();
-                else                                     UI::exitStopwatchMode();
-                example_lvgl_unlock();
+
+                static bool lastButtonMode = false;
+                if (isButtonModeOn && !lastButtonMode) {
+                    Serial.println("\n🕹️ [秒錶] 雙擊切換秒錶模式");
+                    Stopwatch_Manager::toggleMode();
+                    if (Stopwatch_Manager::isStopwatchMode && isBeyInstalled) {
+                        Stopwatch_Manager::arm();
+                    }
+                    if (example_lvgl_lock(100)) {
+                        if (Stopwatch_Manager::isStopwatchMode) UI::enterStopwatchMode();
+                        else                                     UI::exitStopwatchMode();
+                        example_lvgl_unlock();
+                    }
+                }
+                lastButtonMode = isButtonModeOn;
             }
         }
-        lastButtonMode = isButtonModeOn;
-    }
-}
 
         else if (header >= 0xB0 && header <= 0xB6) {
             int packet_index = header - 0xB0; 
@@ -160,8 +174,9 @@ namespace BLE_Manager {
         }
         else if (header == 0x70) {
             if (isBeyInstalled) { 
-                Serial.println("\n[狀態] 🟡 陀螺已拔除 (收到系統靜止碼 0x70)");
-                isBeyInstalled = false; 
+                Serial.println("\n[狀態] 🟡 陀螺已拔除 (收到系統靜止碼 0x70) — 計時開始");
+                isBeyInstalled = false;
+                Stopwatch_Manager::start();
             }
         }
         else if (header >= 0x71 && header <= 0x73) {

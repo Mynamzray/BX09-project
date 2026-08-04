@@ -112,7 +112,7 @@ namespace UI {
         }
         
         lv_label_set_text_fmt(label_battery, "%d%% (%d.%dV) %s", percentage,
-              voltageTenths / 10, voltageTenths % 10, symbol);
+                      voltageTenths / 10, voltageTenths % 10, symbol);
     } 
 
     void updateCurrentRPM(int target_rpm) {
@@ -216,7 +216,7 @@ namespace UI {
             Stopwatch_Manager::runCount = global_sw_hist_count;
             for (int i = 0; i < global_sw_hist_count && i < 8; i++) {
                 Stopwatch_Manager::runHistory[i] = global_sw_history_time[i];
-                Stopwatch_Manager::runPeakSP[i]  = (uint16_t)global_sw_history_sp[i];
+                Stopwatch_Manager::runSP[i]      = (uint16_t)global_sw_history_sp[i];
             }
         }
         prefs.end();
@@ -512,24 +512,21 @@ namespace UI {
         int curSP = (int)Stopwatch_Manager::currentSP;
         updateStopwatchCurrentSP(curSP);
 
-        // Synchronize with Stopwatch_Manager run records & peak SP
+        // Synchronize with Stopwatch_Manager run records & current launch SP
         int total = Stopwatch_Manager::runCount;
         if (total > 0 && total <= 8) {
             for (int i = 0; i < total; i++) {
                 global_sw_history_time[i] = Stopwatch_Manager::runHistory[i];
                 
-                // Read exact Peak SP saved by Stopwatch_Manager or live current SP
-                uint32_t effectiveSP = (uint32_t)Stopwatch_Manager::runPeakSP[i];
-                if (effectiveSP == 0 && (uint32_t)Stopwatch_Manager::peakSP > 0) {
-                    effectiveSP = (uint32_t)Stopwatch_Manager::peakSP;
-                }
+                // Assign current/launch SP directly from Stopwatch_Manager::runSP[i]
+                uint32_t effectiveSP = (uint32_t)Stopwatch_Manager::runSP[i];
                 if (effectiveSP == 0 && curSP > 0) {
                     effectiveSP = (uint32_t)curSP;
                 }
                 
-                if (effectiveSP > global_sw_history_sp[i]) {
+                if (effectiveSP > 0) {
                     global_sw_history_sp[i] = effectiveSP;
-                    Stopwatch_Manager::runPeakSP[i] = (uint16_t)effectiveSP;
+                    Stopwatch_Manager::runSP[i] = (uint16_t)effectiveSP;
                 }
 
                 if (global_sw_history_time[i] > global_sw_longest_spin) {
@@ -568,15 +565,11 @@ namespace UI {
                 uint32_t rs = (runTimeMs % 60000) / 1000;
                 uint32_t sp = global_sw_history_sp[i];
                 
-                // Ensure active run displays live SP during launch
-                if (i == total - 1 && (sp == 0 || Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING)) {
-                    uint32_t activeSP = (uint32_t)Stopwatch_Manager::peakSP;
-                    if (activeSP == 0) activeSP = (uint32_t)curSP;
-                    if (activeSP > sp) {
-                        sp = activeSP;
-                        global_sw_history_sp[i] = activeSP;
-                        Stopwatch_Manager::runPeakSP[i] = (uint16_t)activeSP;
-                    }
+                // Active run displays current SP during launch
+                if (i == total - 1 && curSP > 0) {
+                    sp = (uint32_t)curSP;
+                    global_sw_history_sp[i] = (uint32_t)curSP;
+                    Stopwatch_Manager::runSP[i] = (uint16_t)curSP;
                 }
 
                 pos += snprintf(histText + pos, sizeof(histText) - pos,

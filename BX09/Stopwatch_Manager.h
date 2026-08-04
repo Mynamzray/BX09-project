@@ -7,11 +7,10 @@ namespace Stopwatch_Manager {
     extern volatile bool     isStopwatchMode;
     extern volatile State    state;
     extern volatile uint16_t currentSP;
-    extern volatile uint16_t peakSP;
 
     static const int MAX_RUNS = 8;
     extern uint32_t runHistory[MAX_RUNS];  // elapsed ms per saved run
-    extern uint16_t runPeakSP[MAX_RUNS];
+    extern uint16_t runSP[MAX_RUNS];       // launch/current SP per saved run
     extern int      runCount;
 
     void    toggleMode();
