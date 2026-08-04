@@ -41,7 +41,6 @@ namespace BLE_Manager {
 
     uint16_t liveCurveBuffer[32];
     int liveCurveCount = 0;
-    unsigned long lastDisconnectMs = 0;  
 
     void disconnectClient() {
         if (client != nullptr && client->isConnected()) {
@@ -263,32 +262,22 @@ if (hasStatusTail) {
             pBLEScan->start(0, scanCompleteCB, false);
         }
 
-        if (doConnect && (millis() - lastDisconnectMs >= 300 || lastDisconnectMs == 0)) {
+        if (doConnect) {
             doConnect = false;
 
-            // Reuse the client only for the exact same peer — safe, no stale-state risk.
-            // Otherwise delete the old client (safe now, cooldown above let NimBLE's
-            // internal teardown finish) and create fresh instead of pulling a
-            // possibly-unrelated stale client from getDisconnectedClient().
-            bool isKnownPeer = false;
-            if (client != nullptr && client->getPeerAddress() == *targetAddress) {
-                isKnownPeer = true;
-            } else {
-                if (client != nullptr) {
-                    NimBLEDevice::deleteClient(client);
-                    client = nullptr;
-                }
-                client = NimBLEDevice::createClient();
-            }
+            // client is always nullptr here — the previous client (if any) was already
+            // deleted from onDisconnect() once NimBLE had fully torn it down. Creating
+            // fresh avoids reusing/deleting a client the host task may still reference.
+            client = NimBLEDevice::createClient();
 
             static ClientCallback* sharedClientCallback = nullptr;
             if (sharedClientCallback == nullptr) {
                 sharedClientCallback = new ClientCallback();
             }
-    client->setClientCallbacks(sharedClientCallback);
-            
+            client->setClientCallbacks(sharedClientCallback);
+
             Serial.println(">>> 嘗試與目標裝置建立連線... <<<");
-            if (client->connect(*targetAddress, !isKnownPeer)) {  // skip attr cache refresh for known peers
+            if (client->connect(*targetAddress, true)) {  // always refresh attr cache — client is always fresh
                 isConnected = true;
                 Serial.println(">>> 藍牙連線成功！優化通訊頻寬 (7.5ms - 15ms) <<<");
                 client->updateConnParams(6, 12, 0, 100);
@@ -342,8 +331,12 @@ void ClientCallback::onDisconnect(NimBLEClient* pClient, int reason) {
     BLE_Manager::isConnected = false;
     BLE_Manager::isBeyInstalled = false;
     BLE_Manager::current_ui_state = 0;
-    BLE_Manager::lastDisconnectMs = millis();
     Serial.printf("!!! BX-09 斷開連線 (Reason: %d) ...\n", reason);
+
+    // Safe to delete here — NimBLE only fires onDisconnect after this client's
+    // teardown is fully processed, unlike deleting from the main loop on a timer.
+    NimBLEDevice::deleteClient(pClient);
+    BLE_Manager::client = nullptr;
     
     #if ENABLE_WEB_DASHBOARD
     Preferences tempPrefs;
