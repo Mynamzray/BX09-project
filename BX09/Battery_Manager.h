@@ -24,12 +24,20 @@ namespace Battery_Manager {
     const float CHARGE_START_MV = 4300.0f;
     const float CHARGE_STOP_MV = 4230.0f;
 
+    // Charge-ramp: voltage during active charging is inflated by charge
+    // current and isn't a reliable SoC proxy, so ramp toward 100% over an
+    // estimated duration instead of jumping straight to the curve's reading.
+    const unsigned long ESTIMATED_FULL_CHARGE_MS = 45UL * 60UL * 1000UL;  // ~45 min, tune to your battery
+    unsigned long chargeStartMs = 0;
+    int chargeStartPct = 0;
+    bool wasCharging = false;
+
     float filtered_mV = 0; 
     int lastPercentage = -1;
     bool isCharging = false;
 
     // 硬體分壓電阻校正參數
-    const float CALIBRATION_FACTOR = 1.05; 
+    const float CALIBRATION_FACTOR = 1.00f; 
 
     struct BatteryPoint {
         uint16_t millivolts;
@@ -39,10 +47,9 @@ namespace Battery_Manager {
     // 1S Li-ion estimate under a light load. Terminal voltage rises while charging,
     // so this remains an estimate until a charger-status GPIO is available.
     static constexpr BatteryPoint BATTERY_CURVE[] = {
-        {4200, 100}, {4150, 98}, {4100, 92}, {4050, 85},
-        {4000, 75}, {3950, 65}, {3900, 55}, {3850, 45},
-        {3800, 35}, {3750, 25}, {3700, 15}, {3650, 10},
-        {3500, 5}, {3300, 0},
+        {4000, 100}, {3900, 90}, {3840, 80}, {3790, 70},
+        {3750, 60},  {3710, 50}, {3670, 40}, {3620, 30},
+        {3560, 20},  {3460, 10}, {3300, 0},
     };
 
     int getBatteryPercentage(float millivolts) {
@@ -61,25 +68,42 @@ namespace Battery_Manager {
         return 0;
     }
 
-    bool updateChargingStatus(float current_mV) {
-        static uint8_t chargingSamples = 0;
-        static uint8_t dischargingSamples = 0;
+   // ⚡ 雙重充電偵測算法：絕對高壓門檻 (>=4170mV) + 16秒動態升壓斜率 (dV/dt >= +20mV) 偵測！
+// Dual charge detection: absolute high-voltage threshold (>=4170mV) OR
+// a rising trend over the last ~16s (8 samples x 2s) of at least +20mV.
+bool updateChargingStatus(float current_mV) {
+    static float voltageHistory[8] = {0};
+    static uint8_t histIndex = 0;
+    static uint8_t histCount = 0;
+    static uint8_t chargeConfirmCount = 0;
+    static uint8_t dischargeConfirmCount = 0;
 
-        if (current_mV >= CHARGE_START_MV) {
-            if (chargingSamples < CHARGE_CONFIRM_SAMPLES) chargingSamples++;
-            dischargingSamples = 0;
-        } else if (current_mV <= CHARGE_STOP_MV) {
-            if (dischargingSamples < CHARGE_CONFIRM_SAMPLES) dischargingSamples++;
-            chargingSamples = 0;
-        } else {
-            chargingSamples = 0;
-            dischargingSamples = 0;
-        }
+    float baseline_mV = (histCount >= 8) ? voltageHistory[histIndex] : current_mV;
+    voltageHistory[histIndex] = current_mV;
+    histIndex = (histIndex + 1) % 8;
+    if (histCount < 8) histCount++;
 
-        if (chargingSamples >= CHARGE_CONFIRM_SAMPLES) return true;
-        if (dischargingSamples >= CHARGE_CONFIRM_SAMPLES) return false;
-        return isCharging;
+    float delta_mV = current_mV - baseline_mV;
+
+    bool isRisingTrend = (histCount >= 8 && delta_mV >= 20.0f);
+    bool isAbsoluteChargeVolts = (current_mV >= 4170.0f);
+
+    if (isRisingTrend || isAbsoluteChargeVolts) {
+        if (chargeConfirmCount < 2) chargeConfirmCount++;
+        dischargeConfirmCount = 0;
     }
+    else if (delta_mV <= -15.0f || (!isRisingTrend && current_mV < 4100.0f)) {
+        if (dischargeConfirmCount < 2) dischargeConfirmCount++;
+        chargeConfirmCount = 0;
+    } else {
+        chargeConfirmCount = 0;
+        dischargeConfirmCount = 0;
+    }
+
+    if (chargeConfirmCount >= 2) return true;
+    if (dischargeConfirmCount >= 2) return false;
+    return isCharging;
+}
 
     void init() {
         pinMode(BAT_ADC_PIN, INPUT);
@@ -127,14 +151,30 @@ namespace Battery_Manager {
             // Favor stability; each update represents two seconds of samples.
             filtered_mV = (0.08f * current_mV) + (0.92f * filtered_mV);
 
-            isCharging = updateChargingStatus(current_mV);
+             isCharging = updateChargingStatus(current_mV);
 
-            int currentPercentage = getBatteryPercentage(filtered_mV);
-            if (isCharging || lastPercentage < 0) {
-                lastPercentage = currentPercentage;
-            } else if (currentPercentage < lastPercentage) {
-                // Keep discharging display monotonic even if voltage rebounds briefly.
-                lastPercentage = currentPercentage;
+            if (isCharging && !wasCharging) {
+                // Charging just started — remember where to ramp from.
+                chargeStartMs = millis();
+                chargeStartPct = (lastPercentage < 0) ? getBatteryPercentage(filtered_mV) : lastPercentage;
+            }
+            wasCharging = isCharging;
+
+            if (isCharging) {
+                float rampFraction = (float)(millis() - chargeStartMs) / (float)ESTIMATED_FULL_CHARGE_MS;
+                if (rampFraction > 1.0f) rampFraction = 1.0f;
+                int rampedPct = chargeStartPct + (int)(rampFraction * (100 - chargeStartPct));
+                if (rampedPct > lastPercentage || lastPercentage < 0) {
+                    lastPercentage = rampedPct;
+                }
+            } else {
+                int currentPercentage = getBatteryPercentage(filtered_mV);
+                if (lastPercentage < 0) {
+                    lastPercentage = currentPercentage;
+                } else if (currentPercentage < lastPercentage) {
+                    // Keep discharging display monotonic even if voltage rebounds briefly.
+                    lastPercentage = currentPercentage;
+                }
             }
 
             // 🚨 低電量強制關機防護：未接 USB 且電壓 <= 2.95V (2950mV) 進入 Deep Sleep
