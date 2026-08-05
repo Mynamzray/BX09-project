@@ -35,8 +35,8 @@ int global_hist_count = 0;
 
 // Stopwatch NVS Persistent Storage
 uint32_t global_sw_longest_spin = 0;
-uint32_t global_sw_history_time[8] = {0};
-uint32_t global_sw_history_sp[8] = {0};
+uint32_t global_sw_history_time[Stopwatch_Manager::MAX_RUNS] = {0};
+uint32_t global_sw_history_sp[Stopwatch_Manager::MAX_RUNS] = {0};
 int global_sw_hist_count = 0;
 
 namespace UI {
@@ -180,8 +180,8 @@ namespace UI {
             lv_label_set_text_fmt(label_all_time_rpm, "%d SP", global_all_time_best);
         }
 
-        global_hist_count = histCount;
-        for (int i = 0; i < histCount; i++) {
+        global_hist_count = constrain(histCount, 0, 8);
+        for (int i = 0; i < global_hist_count; i++) {
             global_history[i] = history[i];
         }
 
@@ -208,7 +208,8 @@ namespace UI {
     void loadStopwatchNVS() {
         prefs.begin("sw_store", true);
         global_sw_longest_spin = prefs.getUInt("best_time", 0);
-        global_sw_hist_count = prefs.getInt("sw_cnt", 0);
+        global_sw_hist_count = constrain(prefs.getInt("sw_cnt", 0), 0,
+                         Stopwatch_Manager::MAX_RUNS);
         if (global_sw_hist_count > 0) {
             prefs.getBytes("sw_time", global_sw_history_time, sizeof(global_sw_history_time));
             prefs.getBytes("sw_sp", global_sw_history_sp, sizeof(global_sw_history_sp));
@@ -229,6 +230,20 @@ namespace UI {
         prefs.putBytes("sw_time", global_sw_history_time, sizeof(global_sw_history_time));
         prefs.putBytes("sw_sp", global_sw_history_sp, sizeof(global_sw_history_sp));
         prefs.end();
+    }
+
+    void clearStopwatchUI() {
+        global_sw_longest_spin = 0;
+        global_sw_hist_count = 0;
+        memset(global_sw_history_time, 0, sizeof(global_sw_history_time));
+        memset(global_sw_history_sp, 0, sizeof(global_sw_history_sp));
+
+        if (sw_time_label) lv_label_set_text(sw_time_label, "00:00");
+        if (sw_cur_sp_val) lv_label_set_text(sw_cur_sp_val, "0 SP");
+        if (sw_longest_spin_val) lv_label_set_text(sw_longest_spin_val, "--:--");
+        if (sw_run_label) lv_label_set_text(sw_run_label, "Run: 0");
+        if (sw_hist_label) lv_label_set_text(sw_hist_label, "—");
+        if (sw_arc) lv_arc_set_value(sw_arc, 0);
     }
 
     void init() {
@@ -508,74 +523,70 @@ namespace UI {
             lv_label_set_text_fmt(sw_time_label, "%02d:%02d", min, sec);
         }
 
-        // Animated Rolling Number for Current SP (Just like Normal Mode!)
+        // Animated Rolling Number for Current SP
         int curSP = (int)Stopwatch_Manager::currentSP;
         updateStopwatchCurrentSP(curSP);
 
-        // Synchronize with Stopwatch_Manager run records & current launch SP
-        int total = Stopwatch_Manager::runCount;
-        if (total > 0 && total <= 8) {
-            for (int i = 0; i < total; i++) {
+        // 🟢 徹底分離：唯讀載入已完成的歷史紀錄，絕不改寫 Stopwatch_Manager 的狀態！
+        int completedCount = Stopwatch_Manager::runCount;
+        if (completedCount > 0 && completedCount <= 8) {
+            for (int i = 0; i < completedCount; i++) {
                 global_sw_history_time[i] = Stopwatch_Manager::runHistory[i];
-                
-                // Assign current/launch SP directly from Stopwatch_Manager::runSP[i]
-                uint32_t effectiveSP = (uint32_t)Stopwatch_Manager::runSP[i];
-                if (effectiveSP == 0 && curSP > 0) {
-                    effectiveSP = (uint32_t)curSP;
-                }
-                
-                if (effectiveSP > 0) {
-                    global_sw_history_sp[i] = effectiveSP;
-                    Stopwatch_Manager::runSP[i] = (uint16_t)effectiveSP;
-                }
+                global_sw_history_sp[i]   = (uint32_t)Stopwatch_Manager::runSP[i];
 
                 if (global_sw_history_time[i] > global_sw_longest_spin) {
                     global_sw_longest_spin = global_sw_history_time[i];
                 }
             }
-            global_sw_hist_count = total;
+            global_sw_hist_count = completedCount;
         }
 
-        static int lastRunCount = -1;
-        bool runCountChanged = (Stopwatch_Manager::runCount != lastRunCount);
-        if (runCountChanged) {
-            lastRunCount = Stopwatch_Manager::runCount;
-            
-            // Persist new run data to NVS Flash memory
+        // ⚡ 當經歷一次完整的 Run 結束 (runCount 增加)，將最新完成的歷史數據存入 NVS
+        static int lastSavedRunCount = -1;
+        if (completedCount != lastSavedRunCount) {
+            lastSavedRunCount = completedCount;
             saveStopwatchNVS();
-
-            char runBuf[16];
-            snprintf(runBuf, sizeof(runBuf), "Run: %d", Stopwatch_Manager::runCount);
-            lv_label_set_text(sw_run_label, runBuf);
         }
 
-        // Live update of active run in Run History alongside the timer!
-        if (total > 0) {
-            char histText[384];
-            size_t pos = 0;
-            int displayNum = total;
-            for (int i = total - 1; i >= 0 && displayNum > (total > 6 ? total - 6 : 0); i--) {
-                uint32_t runTimeMs = global_sw_history_time[i];
-                // Active run line updates live along with timer during RUNNING or ARMED state!
-                if (i == total - 1 && (Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING || Stopwatch_Manager::state == Stopwatch_Manager::State::ARMED)) {
-                    runTimeMs = (uint32_t)ms;
-                }
-                
-                uint32_t rm = runTimeMs / 60000;
-                uint32_t rs = (runTimeMs % 60000) / 1000;
-                uint32_t sp = global_sw_history_sp[i];
-                
-                // Active run displays current SP during launch
-                if (i == total - 1 && curSP > 0) {
-                    sp = (uint32_t)curSP;
-                    global_sw_history_sp[i] = (uint32_t)curSP;
-                    Stopwatch_Manager::runSP[i] = (uint16_t)curSP;
-                }
+        // 🏷️ Run 標籤顯示邏輯：如果當前正在進行新的一輪 (ARMED/RUNNING)，Run 數為 completedCount + 1
+        bool isActiveRun = (Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING || 
+                            Stopwatch_Manager::state == Stopwatch_Manager::State::ARMED);
+        int currentRunNumber = isActiveRun ? (completedCount + 1) : completedCount;
+        if (currentRunNumber == 0) currentRunNumber = 0;
 
-                pos += snprintf(histText + pos, sizeof(histText) - pos,
-                                 "%d. %02u:%02u • %u SP\n", displayNum--, rm, rs, sp);
-            }
+        char runBuf[16];
+        snprintf(runBuf, sizeof(runBuf), "Run: %d", currentRunNumber);
+        lv_label_set_text(sw_run_label, runBuf);
+
+        // 📜 歷史列表渲染邏輯 (最上方顯示最新項目)
+        char histText[384];
+        size_t pos = 0;
+
+        // 1. 如果當前有進行中的 Run (ARMED/RUNNING)，在歷史列表最頂端獨立渲染即時動態行！
+        if (isActiveRun) {
+            uint32_t activeMs = (uint32_t)ms;
+            uint32_t rm = activeMs / 60000;
+            uint32_t rs = (activeMs % 60000) / 1000;
+            pos += snprintf(histText + pos, sizeof(histText) - pos,
+                             "%d. %02u:%02u • %u SP\n", currentRunNumber, rm, rs, curSP);
+        }
+
+        // 2. 隨後由新到舊 (completedCount - 1 下降至 0) 渲染所有已完成的歷史條目
+        int printedCompleted = 0;
+        int maxCompletedToPrint = isActiveRun ? 5 : 6; // 保留空間顯示最多 6 行
+        for (int i = completedCount - 1; i >= 0 && printedCompleted < maxCompletedToPrint; i--) {
+            uint32_t rm = global_sw_history_time[i] / 60000;
+            uint32_t rs = (global_sw_history_time[i] % 60000) / 1000;
+            uint32_t sp = global_sw_history_sp[i];
+            pos += snprintf(histText + pos, sizeof(histText) - pos,
+                             "%d. %02u:%02u • %u SP\n", (i + 1), rm, rs, sp);
+            printedCompleted++;
+        }
+
+        if (pos > 0) {
             lv_label_set_text(sw_hist_label, histText);
+        } else {
+            lv_label_set_text(sw_hist_label, "—");
         }
 
         // Update Longest Spin record display

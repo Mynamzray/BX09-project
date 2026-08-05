@@ -1,4 +1,5 @@
 #include "Stopwatch_Manager.h"
+#include <Preferences.h>
 #include <esp_timer.h>
 
 namespace Stopwatch_Manager {
@@ -6,8 +7,8 @@ namespace Stopwatch_Manager {
     volatile State    state           = State::IDLE;
     volatile uint16_t currentSP       = 0;
 
-    uint32_t runHistory[MAX_RUNS] = {};
-    uint16_t runSP[MAX_RUNS]      = {};
+    uint32_t runHistory[MAX_RUNS] = {0};
+    uint16_t runSP[MAX_RUNS]      = {0};
     int      runCount             = 0;
 
     static int64_t startUs  = 0;
@@ -15,10 +16,13 @@ namespace Stopwatch_Manager {
 
     static void _saveRun() {
         if (frozenMs < 500) return;  // discard ghost runs under 500ms
+        
         if (runCount < MAX_RUNS) {
             runHistory[runCount] = (uint32_t)frozenMs;
-            runSP[runCount++]    = currentSP;
+            runSP[runCount]      = currentSP;
+            runCount++;
         } else {
+            // Shift older runs left (pushing out run 0)
             for (int i = 0; i < MAX_RUNS - 1; i++) {
                 runHistory[i] = runHistory[i + 1];
                 runSP[i]      = runSP[i + 1];
@@ -81,5 +85,20 @@ namespace Stopwatch_Manager {
 
     void updateSP(uint16_t sp) {
         currentSP = sp;
+    }
+
+    void clearHistory() {
+        runCount = 0;
+        frozenMs = 0;
+        currentSP = 0;
+        memset(runHistory, 0, sizeof(runHistory));
+        memset(runSP, 0, sizeof(runSP));
+
+        Preferences prefs;
+        prefs.begin("sw_store", false);
+        prefs.clear();
+        prefs.end();
+
+        Serial.println("🗑️ [秒錶] 歷史紀錄與 NVS 快取已成功清除！");
     }
 }
