@@ -5,5 +5,4 @@ __pycache__/
 # 忽略 Arduino 編譯產生的暫存檔 (如果有)
 build/
 *.elf
-*.bin
 *.hex
