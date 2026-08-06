@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BX.DISPLAY // Firmware Flash Portal</title>
+  <meta name="description" content="BX.Display ESP32-S3 firmware flashing portal — Web Serial, GitHub Pages hosted.">
+
+  <!-- JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+
+  <!-- ESP Web Tools (loaded as a module; registers <esp-web-install-button>) -->
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+
+  <style>
+    /* ── Reset ──────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    code { font-family: inherit; }
+
+    /* ── Design tokens ──────────────────────────────────────────────────── */
+    :root {
+      --bg:          #FBFBFB;
+      --card:        #F2F2F2;
+      --border:      #E2E2E2;
+      --title:       #1E1E1E;
+      --body:        #3D3D3D;
+      --muted:       #888888;
+      --accent:      #FF5500;
+      --term-bg:     #1A1A1A;
+      --term-hdr:    #242424;
+      --term-border: #333333;
+      --font-head:   'Arial Black', 'Helvetica Neue', Impact, sans-serif;
+      --font-mono:   'JetBrains Mono', ui-monospace, Menlo, monospace;
+    }
+
+    /* ── Base ───────────────────────────────────────────────────────────── */
+    html, body {
+      background: var(--bg);
+      color: var(--body);
+      font-family: var(--font-mono);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── App shell ──────────────────────────────────────────────────────── */
+    .app { display: flex; flex-direction: column; min-height: 100vh; }
+
+    /* ── Serial warning banner ──────────────────────────────────────────── */
+    #serial-warning {
+      display: none;
+      background: #FFF0F0;
+      border-bottom: 2px solid #CC2222;
+      padding: 14px 32px;
+    }
+    #serial-warning.show { display: block; }
+    .warn-inner {
+      max-width: 1152px; margin: 0 auto;
+      display: flex; align-items: flex-start; gap: 12px;
+    }
+    .warn-icon { color: #CC2222; width: 18px; height: 18px; flex-shrink: 0; margin-top: 2px; }
+    .warn-title {
+      color: #CC2222; font-weight: 700; font-size: 13px;
+      letter-spacing: .05em; text-transform: uppercase;
+    }
+    .warn-body { color: var(--body); font-size: 12px; margin-top: 4px; line-height: 1.65; }
+    .warn-body strong { color: #CC2222; }
+
+    /* ── Header ─────────────────────────────────────────────────────────── */
+    header {
+      border-bottom: 1px solid var(--border);
+      padding: 20px 32px;
+      flex-shrink: 0;
+    }
+    .hdr-inner {
+      max-width: 1152px; margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 {
+      font-family: var(--font-head);
+      color: var(--title);
+      font-size: 22px; font-weight: 900;
+      letter-spacing: .06em; text-transform: uppercase;
+    }
+    h1 .div { color: var(--border); font-weight: 300; }
+    .subtitle {
+      color: var(--muted); font-size: 11px;
+      margin-top: 6px; letter-spacing: .12em; text-transform: uppercase;
+    }
+
+    /* ── Status pill ────────────────────────────────────────────────────── */
+    #status-pill {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 16px;
+      border: 1px solid var(--border);
+      background: var(--card);
+      font-size: 11px; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase;
+      color: var(--muted);
+      flex-shrink: 0;
+      white-space: nowrap;
+      transition: background .2s, color .2s, border-color .2s;
+    }
+    #status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #BBBBBB; flex-shrink: 0;
+      transition: background .2s;
+    }
+
+    /* ── System ready banner ────────────────────────────────────────────── */
+    .sys-banner {
+      background: var(--accent);
+      padding: 10px 32px; flex-shrink: 0;
+    }
+    .sys-banner-inner {
+      max-width: 1152px; margin: 0 auto;
+      font-size: 11px; font-weight: 700;
+      letter-spacing: .12em; text-transform: uppercase;
+      color: #FBFBFB;
+    }
+
+    /* ── Main layout ────────────────────────────────────────────────────── */
+    main {
+      flex: 1;
+      max-width: 1152px; width: 100%;
+      margin: 0 auto;
+      padding: 28px 32px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 3fr 2fr;
+      gap: 24px;
+      align-items: start;
+    }
+    .col { display: flex; flex-direction: column; gap: 20px; }
+
+    /* ── Section cards ──────────────────────────────────────────────────── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      padding: 20px;
+    }
+    .card-plain {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      padding: 16px;
+    }
+    .sec-label {
+      display: flex; align-items: center; gap: 8px;
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: .14em; color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .sec-label.mb20 { margin-bottom: 20px; }
+    .sec-label.mb16 { margin-bottom: 16px; }
+
+    /* ── Firmware select ────────────────────────────────────────────────── */
+    .fw-select {
+      width: 100%;
+      appearance: none; -webkit-appearance: none;
+      background-color: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--title);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      padding: 10px 36px 10px 12px;
+      cursor: pointer;
+      outline: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+      background-size: 16px;
+      transition: border-color .15s;
+    }
+    .fw-select:focus  { border-color: var(--accent); }
+    .fw-select:hover  { border-color: var(--muted); }
+
+    .manifest-lbl {
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: .14em; color: var(--muted);
+      margin-top: 12px; margin-bottom: 4px;
+    }
+    #manifest-url {
+      font-size: 11px; word-break: break-all;
+      line-height: 1.6; color: var(--accent);
+    }
+
+    /* ── ESP mount ──────────────────────────────────────────────────────── */
+    .esp-mount {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      min-height: 80px;
+      display: flex; align-items: center; justify-content: center;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    #esp-container { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; }
+    .esp-note {
+      font-size: 11px; color: var(--muted);
+      text-align: center; line-height: 1.7;
+    }
+    .esp-note code { color: var(--accent); }
+    .esp-note strong { color: var(--body); }
+
+    /* ── Terminal ───────────────────────────────────────────────────────── */
+    .terminal {
+      background: var(--term-bg);
+      border: 1px solid var(--term-border);
+      display: flex; flex-direction: column;
+    }
+    .term-hdr {
+      background: var(--term-hdr);
+      border-bottom: 1px solid var(--term-border);
+      padding: 10px 16px;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-shrink: 0;
+    }
+    .term-hdr-left { display: flex; align-items: center; gap: 8px; }
+    .term-title {
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: .14em; color: #666;
+    }
+    .term-ctrls { display: flex; align-items: center; gap: 6px; }
+    .tdot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+    #term-indicator { transition: background .3s; }
+    #term-clear {
+      margin-left: 12px;
+      font-family: var(--font-mono);
+      font-size: 10px; text-transform: uppercase;
+      letter-spacing: .1em; color: #555;
+      background: transparent;
+      border: 1px solid #333;
+      padding: 2px 8px; cursor: pointer;
+    }
+    #term-clear:hover { color: #888; border-color: #555; }
+    #term-body {
+      overflow-y: auto;
+      padding: 16px;
+      font-family: var(--font-mono);
+      font-size: 12px; line-height: 1.75;
+      min-height: 260px; max-height: 320px;
+      user-select: text; -webkit-user-select: text;
+    }
+
+    /* ── Steps ──────────────────────────────────────────────────────────── */
+    .steps { list-style: none; display: flex; flex-direction: column; gap: 20px; }
+    .step  { display: flex; gap: 16px; align-items: flex-start; }
+    .step-n {
+      font-family: var(--font-head);
+      font-size: 28px; font-weight: 900;
+      color: var(--border); line-height: 1;
+      width: 36px; flex-shrink: 0;
+    }
+    .step-title {
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .1em;
+      color: var(--title);
+    }
+    .step-body { font-size: 11px; color: var(--muted); margin-top: 4px; line-height: 1.65; }
+
+    /* ── Accordion (details / summary) ─────────────────────────────────── */
+    .accordion { display: flex; flex-direction: column; gap: 4px; }
+    details.acc-item {
+      border: 1px solid var(--border);
+      background: var(--bg);
+    }
+    details.acc-item summary {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px;
+      cursor: pointer; list-style: none;
+      font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: .08em;
+      color: var(--accent);
+      user-select: none;
+      gap: 8px;
+    }
+    details.acc-item summary::-webkit-details-marker { display: none; }
+    details.acc-item summary::after {
+      content: '▾';
+      font-size: 14px; color: var(--muted);
+      opacity: .5; flex-shrink: 0;
+      transition: transform .2s;
+    }
+    details.acc-item[open] summary::after { transform: rotate(180deg); }
+    .acc-body {
+      padding: 0 12px 12px;
+      font-size: 11px; color: var(--muted); line-height: 1.7;
+    }
+    .acc-body code { color: var(--accent); }
+    .acc-body strong { color: var(--body); }
+
+    /* ── Hardware spec table ────────────────────────────────────────────── */
+    dl.hw { display: flex; flex-direction: column; gap: 8px; }
+    .hw-row {
+      display: flex; justify-content: space-between; gap: 16px;
+      font-size: 11px;
+    }
+    dt.hk { color: var(--muted); }
+    dd.hv { color: var(--body); margin: 0; }
+    dd.hv.accent { color: var(--accent); font-weight: 700; }
+    dd.hv.bold   { color: var(--title);  font-weight: 700; }
+
+    /* ── Footer ─────────────────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 16px 32px; flex-shrink: 0;
+    }
+    .ftr-inner {
+      max-width: 1152px; margin: 0 auto;
+      display: flex; flex-wrap: wrap;
+      align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .ftr-link {
+      display: flex; align-items: center; gap: 6px;
+      font-size: 11px; text-transform: uppercase;
+      letter-spacing: .12em; color: var(--muted);
+      text-decoration: none; transition: color .15s;
+    }
+    .ftr-link:hover { color: var(--body); }
+    .ftr-note { color: var(--border); margin-left: 6px; text-transform: none; letter-spacing: normal; }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; }
+    .badge {
+      font-size: 9px; text-transform: uppercase;
+      letter-spacing: .1em; color: var(--muted);
+      border: 1px solid var(--border); padding: 3px 8px;
+    }
+
+    /* ── Animation ──────────────────────────────────────────────────────── */
+    @keyframes bx-pulse { 0%,100% { opacity:1 } 50% { opacity:.35 } }
+
+    /* ── Responsive ─────────────────────────────────────────────────────── */
+    @media (max-width: 800px) {
+      .grid { grid-template-columns: 1fr; }
+      header, main, footer,
+      .sys-banner, #serial-warning { padding-left: 16px; padding-right: 16px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Serial API blocked banner (shown by JS if navigator.serial absent) ── -->
+  <div id="serial-warning">
+    <div class="warn-inner">
+      <!-- AlertTriangle icon -->
+      <svg class="warn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+        <line x1="12" y1="9"  x2="12"   y2="13"/>
+        <line x1="12" y1="17" x2="12.01" y2="17"/>
+      </svg>
+      <div>
+        <p class="warn-title">Web Serial API Blocked</p>
+        <p class="warn-body">
+          <code>navigator.serial</code> is unavailable in this context. Likely causes:
+          <strong>(1)</strong> missing <code>serial</code> iframe permission,
+          <strong>(2)</strong> non-Chrome / Edge browser, or
+          <strong>(3)</strong> an HTTP (non-HTTPS) origin.
+          Open this page directly in <strong>Chrome or Edge 89+</strong> over HTTPS to enable flashing.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Header ─────────────────────────────────────────────────────────── -->
+  <header>
+    <div class="hdr-inner">
+      <div>
+        <h1>BX.DISPLAY <span class="div">//</span> FIRMWARE FLASH PORTAL</h1>
+        <p class="subtitle">ESP32-S3 · Web Serial Flashing &amp; Maintenance · Batch 01</p>
+      </div>
+      <div id="status-pill">
+        <span id="status-dot"></span>
+        <span id="status-label">Idle</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── System ready banner ───────────────────────────────────────────── -->
+  <div class="sys-banner">
+    <div class="sys-banner-inner">
+      SYSTEM READY: Plug ESP32-S3 via USB-C data cable prior to flashing.
+    </div>
+  </div>
+
+  <!-- ── Main ──────────────────────────────────────────────────────────── -->
+  <main>
+    <div class="grid">
+
+      <!-- ── LEFT COLUMN (60%) ──────────────────────────────────────────── -->
+      <div class="col">
+
+        <!-- Firmware selector -->
+        <div class="card">
+          <div class="sec-label">
+            <!-- Cpu icon -->
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--muted)">
+              <rect x="4" y="4" width="16" height="16" rx="2"/>
+              <rect x="9" y="9" width="6" height="6"/>
+              <line x1="9"  y1="1"  x2="9"  y2="4"/>  <line x1="15" y1="1"  x2="15" y2="4"/>
+              <line x1="9"  y1="20" x2="9"  y2="23"/> <line x1="15" y1="20" x2="15" y2="23"/>
+              <line x1="20" y1="9"  x2="23" y2="9"/>  <line x1="20" y1="14" x2="23" y2="14"/>
+              <line x1="1"  y1="9"  x2="4"  y2="9"/>  <line x1="1"  y1="14" x2="4"  y2="14"/>
+            </svg>
+            TARGET BUILD VERSION
+          </div>
+
+          <select id="fw-select" class="fw-select">
+            <option value="v1.0.5-HotFix">[LATEST]  v1.0.4-prod — Screen Glitch Patch</option>
+            <option value="v1.0.3-stable">[STABLE]  v1.0.3-stable</option>
+            <option value="v1.0.0-factory">[FACTORY] v1.0.0-factory</option>
+          </select>
+
+          <p class="manifest-lbl">RESOLVED MANIFEST ENDPOINT</p>
+          <p id="manifest-url"></p>
+        </div>
+
+        <!-- Flash Controls -->
+        <div class="card">
+          <div class="sec-label">
+            <!-- Usb icon -->
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color:var(--muted)">
+              <path d="M6 3h12l4 6-10 13L2 9z"/>
+              <path d="M11 3L8 9l4 13 4-13-3-6"/>
+              <line x1="2" y1="9" x2="22" y2="9"/>
+            </svg>
+            Flash Controls — ESP Web Tools
+          </div>
+
+          <!-- Web component mount point -->
+          <div class="esp-mount">
+            <div id="esp-container">
+              <p style="font-size:12px;color:var(--muted);">Loading esp-web-tools@10…</p>
+            </div>
+          </div>
+
+          <p class="esp-note">
+            Requires <strong>Chrome or Edge 89+</strong> over HTTPS.<br>
+            If this button is blocked: add <code>https://unpkg.com</code> to the
+            <code>script-src</code> Content Security Policy directive.
+          </p>
+        </div>
+
+        <!-- Terminal / Serial Console -->
+        <div class="terminal">
+          <!-- Titlebar -->
+          <div class="term-hdr">
+            <div class="term-hdr-left">
+              <!-- Terminal icon -->
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#666"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="4 17 10 11 4 5"/>
+                <line x1="12" y1="19" x2="20" y2="19"/>
+              </svg>
+              <span class="term-title">Serial Console — 115200 baud</span>
+            </div>
+            <div class="term-ctrls">
+              <span class="tdot" style="background:#5A1010"></span>
+              <span class="tdot" style="background:#4A3200"></span>
+              <span class="tdot" id="term-indicator" style="background:#333333"></span>
+              <button id="term-clear">Clear</button>
+            </div>
+          </div>
+          <!-- Log output -->
+          <div id="term-body"></div>
+        </div>
+
+      </div>
+
+      <!-- ── RIGHT COLUMN (40%) ─────────────────────────────────────────── -->
+      <div class="col">
+
+        <!-- Flash Procedure -->
+        <div class="card">
+          <div class="sec-label mb20">Flash Procedure</div>
+          <ol class="steps">
+            <li class="step">
+              <span class="step-n">01</span>
+              <div>
+                <div class="step-title">Power Off Device</div>
+                <div class="step-body">Slide the BX.Display power switch to the OFF position.</div>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-n">02</span>
+              <div>
+                <div class="step-title">Connect USB-C</div>
+                <div class="step-body">Use a USB-C data cable directly to your PC. Chrome or Edge 89+ required.</div>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-n">03</span>
+              <div>
+                <div class="step-title">Select &amp; Flash</div>
+                <div class="step-body">Choose your firmware build, click INITIALIZE FLASH, and pick the ESP32-S3 serial port from the browser popup.</div>
+              </div>
+            </li>
+            <li class="step">
+              <span class="step-n">04</span>
+              <div>
+                <div class="step-title">Wait for Complete</div>
+                <div class="step-body">Allow ~30 s for the flash cycle to finish. Do not disconnect the cable.</div>
+              </div>
+            </li>
+          </ol>
+        </div>
+
+        <!-- Troubleshooting -->
+        <div class="card">
+          <div class="sec-label mb16">Troubleshooting</div>
+          <div class="accordion">
+
+            <details class="acc-item">
+              <summary>Port Not Detected?</summary>
+              <div class="acc-body">
+                Verify your cable supports data transfer — many USB-C cables are power-only.
+                Try a different cable or port. Ensure no other tool (Arduino IDE, PlatformIO)
+                is currently holding the serial port open.
+              </div>
+            </details>
+
+            <details class="acc-item">
+              <summary>Screen Glitch / Freeze?</summary>
+              <div class="acc-body">
+                Power-cycle the device (OFF → 5 s → ON). If the issue persists, flash
+                <strong>v1.0.4-prod</strong> — it contains the display driver patch
+                that resolves the framebuffer glitch regression.
+              </div>
+            </details>
+
+            <details class="acc-item">
+              <summary>Battery Icon Delay?</summary>
+              <div class="acc-body">
+                Expected behavior. The battery gauge initializes only after cell voltage
+                exceeds <strong>4.4 V</strong>. Allow up to 60 s after power-on
+                for the indicator to appear.
+              </div>
+            </details>
+
+            <details class="acc-item">
+              <summary>Install Button Not Visible?</summary>
+              <div class="acc-body">
+                Web Serial API requires Chrome 89+ or Edge 89+. Firefox and Safari are
+                unsupported. If hosted behind a CSP, add
+                <code>https://unpkg.com</code> to the <code>script-src</code> directive.
+              </div>
+            </details>
+
+          </div>
+        </div>
+
+        <!-- Hardware Spec -->
+        <div class="card-plain">
+          <div class="sec-label">Target Hardware</div>
+          <dl class="hw">
+            <div class="hw-row"><dt class="hk">Device</dt>       <dd class="hv bold">BX.Display Batch 01</dd></div>
+            <div class="hw-row"><dt class="hk">MCU</dt>          <dd class="hv">ESP32-S3 rev 0.1</dd></div>
+            <div class="hw-row"><dt class="hk">Flash Memory</dt> <dd class="hv">16 MB SPI NOR</dd></div>
+            <div class="hw-row"><dt class="hk">Interface</dt>    <dd class="hv">USB-C / UART0</dd></div>
+            <div class="hw-row"><dt class="hk">Baud Rate</dt>    <dd class="hv accent">115200</dd></div>
+            <div class="hw-row"><dt class="hk">WiFi</dt>         <dd class="hv">802.11 b/g/n 2.4 GHz</dd></div>
+            <div class="hw-row"><dt class="hk">Bluetooth</dt>    <dd class="hv">BLE 5.0</dd></div>
+            <div class="hw-row"><dt class="hk">Firmware Host</dt><dd class="hv">GitHub Pages</dd></div>
+          </dl>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- ── Footer ────────────────────────────────────────────────────────── -->
+  <footer>
+    <div class="ftr-inner">
+      <a href="https://instagram.com/BX.Display" target="_blank" rel="noopener noreferrer" class="ftr-link">
+        <!-- Instagram icon -->
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="2" width="20" height="20" rx="5" ry="5"/>
+          <path d="M16 11.37A4 4 0 1112.63 8 4 4 0 0116 11.37z"/>
+          <line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>
+        </svg>
+        @BX.Display
+        <span class="ftr-note">— Support &amp; Updates</span>
+      </a>
+      <div class="badges">
+        <span class="badge">Batch 01</span>
+        <span class="badge">HW Rev 1.0</span>
+        <span class="badge">ESP32-S3</span>
+        <span class="badge">esptool.py v4.7</span>
+      </div>
+    </div>
+  </footer>
+
+</div><!-- /.app -->
+
+<!-- ─────────────────────────────────────────────────────────────────────────
+     Main script (module so it's automatically deferred; shares scope with
+     the ESP Web Tools module loaded in <head>).
+──────────────────────────────────────────────────────────────────────────── -->
+<script type="module">
+
+  // ── Constants ─────────────────────────────────────────────────────────────
+
+  const GITHUB_BASE = 'https://mynamzray.github.io/BX09-project/BX09/firmware';
+
+  const BOOT_LOGS = [
+    '> ╔══════════════════════════════════════════╗',
+    '> ║  BX.DISPLAY // FIRMWARE FLASH PORTAL    ║',
+    '> ╚══════════════════════════════════════════╝',
+    '> Target   : ESP32-S3  (BX.Display Batch 01)',
+    '> Endpoint : mynamzray.github.io/BX09-project',
+    '> Protocol : USB-C / UART @ 115200 baud',
+    '> Toolchain: esptool.py v4.7.0',
+    '>',
+    '> STATUS   : SYSTEM READY',
+    '> NEXT     : Connect ESP32-S3 via USB-C, then',
+    '>            click INITIALIZE FLASH above.',
+    '> BROWSER  : Chrome 89+ or Edge 89+ required.',
+  ];
+
+  const STATUS_CFG = {
+    idle:     { label: 'Idle',     bg: '#F2F2F2', color: '#888888', border: '#E2E2E2', dot: '#BBBBBB', pulse: false },
+    flashing: { label: 'Flashing', bg: '#FFF3EE', color: '#FF5500', border: '#FF5500', dot: '#FF5500', pulse: true  },
+    complete: { label: 'Complete', bg: '#EDFFF5', color: '#1A8A4A', border: '#1A8A4A', dot: '#1A8A4A', pulse: false },
+    error:    { label: 'Error',    bg: '#FFF0F0', color: '#CC2222', border: '#CC2222', dot: '#CC2222', pulse: true  },
+  };
+
+  // ── State ─────────────────────────────────────────────────────────────────
+
+  let currentStatus = 'idle';
+  let termLogs = [...BOOT_LOGS];
+
+  // ── DOM refs ──────────────────────────────────────────────────────────────
+
+  const $fwSelect     = document.getElementById('fw-select');
+  const $manifestUrl  = document.getElementById('manifest-url');
+  const $espContainer = document.getElementById('esp-container');
+  const $termBody     = document.getElementById('term-body');
+  const $termClear    = document.getElementById('term-clear');
+  const $statusPill   = document.getElementById('status-pill');
+  const $statusDot    = document.getElementById('status-dot');
+  const $statusLabel  = document.getElementById('status-label');
+  const $termInd      = document.getElementById('term-indicator');
+  const $warning      = document.getElementById('serial-warning');
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  function getManifestUrl(value) {
+    return value ? `${GITHUB_BASE}/${value}/manifest.json` : '';
+  }
+
+  /** Maps a terminal log line to an inline CSS color string. */
+  function lineStyle(line) {
+    if (line.includes('[SUCCESS]') || line.includes('DEVICE ONLINE'))
+      return 'color:#FF5500;font-weight:700;';
+    if (line.includes('[VERIFY]') || line.includes('FLASH COMPLETE') || line.includes('[RESET]'))
+      return 'color:#FF7A33;';
+    if (line.includes('[WRITE]'))
+      return 'color:#FF8C55;';
+    if (line.includes('[ERASE]'))
+      return 'color:#F59E0B;';
+    if (line.includes('[ERROR]') || line.includes('[FAIL]'))
+      return 'color:#F87171;';
+    if (line.startsWith('> ──') || line.startsWith('> ╔') || line.startsWith('> ║') || line.startsWith('> ╚'))
+      return 'color:#444444;opacity:0.35;';
+    if (line.includes('rst:') || line.includes('SPIWP') || line.includes('BX.DISPLAY BUILD'))
+      return 'color:#9CA3AF;';
+    if (line.startsWith('>'))
+      return 'color:#D4D4D4;';
+    return 'color:#6B7280;';
+  }
+
+  // ── Status pill ───────────────────────────────────────────────────────────
+
+  function setStatus(s) {
+    currentStatus = s;
+    const c = STATUS_CFG[s];
+    $statusPill.style.background   = c.bg;
+    $statusPill.style.color        = c.color;
+    $statusPill.style.borderColor  = c.border;
+    $statusDot.style.background    = c.dot;
+    $statusDot.style.animation     = c.pulse ? 'bx-pulse 1s ease-in-out infinite' : 'none';
+    $statusLabel.textContent       = c.label;
+    $termInd.style.background      = s === 'complete' ? '#1A8A4A' : s === 'flashing' ? '#FF5500' : '#333333';
+  }
+
+  // ── Terminal renderer ─────────────────────────────────────────────────────
+
+  function renderLogs() {
+    $termBody.innerHTML = '';
+
+    termLogs.forEach(line => {
+      const el = document.createElement('div');
+      el.style.cssText = lineStyle(line);
+      el.textContent = line === '' ? '\u00A0' : line;
+      $termBody.appendChild(el);
+    });
+
+    // Blinking cursor while flashing
+    if (currentStatus === 'flashing') {
+      const cur = document.createElement('span');
+      cur.textContent = '▌';
+      cur.style.cssText = 'color:#FF5500;animation:bx-pulse 0.8s ease-in-out infinite;';
+      $termBody.appendChild(cur);
+    }
+
+    $termBody.scrollTop = $termBody.scrollHeight;
+  }
+
+  function addLog(line) {
+    termLogs.push(line);
+    renderLogs();
+  }
+
+  function clearTerminal() {
+    termLogs = [...BOOT_LOGS];
+    setStatus('idle');
+    renderLogs();
+  }
+
+  // ── Manifest URL display ──────────────────────────────────────────────────
+
+  function updateManifest(value) {
+    const url = getManifestUrl(value);
+    $manifestUrl.textContent = url || 'No target firmware build selected';
+    $manifestUrl.style.color = url ? '#FF5500' : '#888888';
+    return url;
+  }
+
+  // ── ESP Web Tools button ──────────────────────────────────────────────────
+
+  function buildButtonHtml(manifestUrl) {
+    return `
+<esp-web-install-button manifest="${manifestUrl}">
+  <button slot="activate" style="
+    background:#FF5500;color:#FBFBFB;border:none;
+    padding:13px 32px;font-weight:700;letter-spacing:2px;font-size:13px;
+    cursor:pointer;text-transform:uppercase;
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+  ">INITIALIZE FLASH</button>
+  <span slot="unsupported" style="
+    color:#3D3D3D;font-size:11px;display:block;padding:8px;
+    border:1px solid #FF5500;background:#FFF3EE;
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+  ">✗ Web Serial unsupported. Use Chrome or Edge 89+ over HTTPS.</span>
+  <span slot="not-allowed" style="
+    color:#3D3D3D;font-size:11px;display:block;padding:8px;
+    border:1px solid #FF5500;background:#FFF3EE;
+    font-family:'JetBrains Mono',ui-monospace,monospace;
+  ">✗ Serial access denied by CSP. See Settings → App Security.</span>
+</esp-web-install-button>`;
+  }
+
+  /**
+   * Real hardware event handler.
+   * ESP Web Tools emits `state-changed` on the <esp-web-install-button> element
+   * with a `detail` object describing the current flashing state.
+   */
+  function onStateChanged(e) {
+    const d = e.detail;
+    if (!d) return;
+    const ts = new Date().toLocaleTimeString();
+
+    switch (d.state) {
+      case 'initializing':
+        addLog(`> [${ts}] Initializing ESP Web Tools...`);
+        break;
+
+      case 'manifest':
+        addLog(`> [${ts}] Manifest loaded: ${getManifestUrl($fwSelect.value)}`);
+        break;
+
+      case 'preparing':
+        setStatus('flashing');
+        addLog(`> [${ts}] ── FLASH SEQUENCE STARTED ─────────────`);
+        addLog('> [ERASE]  Erasing flash chip...');
+        renderLogs();
+        break;
+
+      case 'erasing':
+        addLog(`> [${ts}] [ERASE]  ${d.message || 'Erasing...'}`);
+        break;
+
+      case 'writing': {
+        const rx = d.details && d.details.received;
+        const tot = d.details && d.details.total;
+        if (rx !== undefined && tot && tot > 0) {
+          const pct    = Math.round((rx / tot) * 100);
+          const filled = Math.round(pct / 6);
+          const bar    = '▓'.repeat(filled) + '░'.repeat(Math.max(0, 17 - filled));
+          addLog(`> [WRITE]  ${bar} ${String(pct).padStart(3)}%  (${rx}/${tot} bytes)`);
+        } else {
+          addLog(`> [WRITE]  ${d.message || 'Writing...'}`);
+        }
+        break;
+      }
+
+      case 'finished':
+        setStatus('complete');
+        addLog('> [VERIFY] SHA-256 hash verified.');
+        addLog('> [RESET]  Hard reset via RTS pin...');
+        addLog('> ── FLASH COMPLETE ──────────────────────────');
+        addLog('> [SUCCESS] Firmware installed successfully!');
+        addLog('> ✓ You may disconnect the USB cable.');
+        renderLogs();
+        break;
+
+      case 'error':
+        setStatus('error');
+        addLog('> ── FLASH FAILED ────────────────────────────');
+        addLog(`> [ERROR]  ${d.message || 'An unknown error occurred.'}`);
+        addLog('> Check cable, browser permissions, and retry.');
+        renderLogs();
+        break;
+    }
+  }
+
+  function mountEspButton() {
+    const url = getManifestUrl($fwSelect.value);
+    $espContainer.innerHTML = buildButtonHtml(url);
+    const btn = $espContainer.querySelector('esp-web-install-button');
+    if (btn) btn.addEventListener('state-changed', onStateChanged);
+  }
+
+  // ── Serial API gate ───────────────────────────────────────────────────────
+
+  if (!('serial' in navigator)) {
+    $warning.classList.add('show');
+  }
+
+  // ── Boot sequence ─────────────────────────────────────────────────────────
+
+  updateManifest($fwSelect.value);
+  renderLogs();
+
+  // Wait for the custom element to be registered (loaded async by the module
+  // script in <head>) before injecting the button and wiring events.
+  // A 12 s timeout surfaces a user-visible error if unpkg.com is blocked.
+  const espReady    = customElements.whenDefined('esp-web-install-button');
+  const espTimeout  = new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 12000));
+
+  Promise.race([espReady, espTimeout])
+    .then(mountEspButton)
+    .catch(() => {
+      $espContainer.innerHTML =
+        '<p style="color:#CC2222;font-size:12px;">' +
+        '✗ Failed to load ESP Web Tools (network error or CSP block).<br>' +
+        'Add <code style="color:#FF5500">https://unpkg.com</code> to <code style="color:#FF5500">script-src</code> or check your connection.' +
+        '</p>';
+    });
+
+  // ── Firmware dropdown change ──────────────────────────────────────────────
+
+  $fwSelect.addEventListener('change', function () {
+    updateManifest(this.value);
+    // Re-mount button with updated manifest attribute
+    if (customElements.get('esp-web-install-button')) {
+      mountEspButton();
+    }
+  });
+
+  // ── Terminal clear button ─────────────────────────────────────────────────
+
+  $termClear.addEventListener('click', clearTerminal);
+
+</script>
+</body>
+</html>
