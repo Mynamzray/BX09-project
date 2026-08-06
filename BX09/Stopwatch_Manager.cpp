@@ -1,31 +1,34 @@
 #include "Stopwatch_Manager.h"
+#include <Preferences.h>
 #include <esp_timer.h>
 
 namespace Stopwatch_Manager {
     volatile bool     isStopwatchMode = false;
     volatile State    state           = State::IDLE;
     volatile uint16_t currentSP       = 0;
-    volatile uint16_t peakSP          = 0;
 
-    uint32_t runHistory[MAX_RUNS] = {};
-    uint16_t runPeakSP[MAX_RUNS]  = {};
-    int      runCount              = 0;
+    uint32_t runHistory[MAX_RUNS] = {0};
+    uint16_t runSP[MAX_RUNS]      = {0};
+    int      runCount             = 0;
 
     static int64_t startUs  = 0;
     static int64_t frozenMs = 0;
 
     static void _saveRun() {
         if (frozenMs < 500) return;  // discard ghost runs under 500ms
+        
         if (runCount < MAX_RUNS) {
-            runHistory[runCount]  = (uint32_t)frozenMs;
-            runPeakSP[runCount++] = peakSP;
+            runHistory[runCount] = (uint32_t)frozenMs;
+            runSP[runCount]      = currentSP;
+            runCount++;
         } else {
+            // Shift older runs left (pushing out run 0)
             for (int i = 0; i < MAX_RUNS - 1; i++) {
                 runHistory[i] = runHistory[i + 1];
-                runPeakSP[i]  = runPeakSP[i + 1];
+                runSP[i]      = runSP[i + 1];
             }
             runHistory[MAX_RUNS - 1] = (uint32_t)frozenMs;
-            runPeakSP[MAX_RUNS - 1]  = peakSP;
+            runSP[MAX_RUNS - 1]      = currentSP;
         }
     }
 
@@ -45,9 +48,8 @@ namespace Stopwatch_Manager {
             isStopwatchMode = false;
         } else {
             isStopwatchMode = true;
-            state    = State::IDLE;
-            frozenMs = 0;
-            peakSP   = 0;
+            state     = State::IDLE;
+            frozenMs  = 0;
             currentSP = 0;
         }
         Serial.printf("[秒錶] 模式: %s\n", isStopwatchMode ? "ON" : "OFF");
@@ -60,7 +62,6 @@ namespace Stopwatch_Manager {
             _saveRun();
         }
         frozenMs  = 0;
-        peakSP    = 0;
         currentSP = 0;
         state     = State::ARMED;
         Serial.println("[秒錶] ● 陀螺就位 — 待發射");
@@ -70,7 +71,6 @@ namespace Stopwatch_Manager {
         if (!isStopwatchMode || state != State::ARMED) return;
         startUs  = esp_timer_get_time();
         frozenMs = 0;
-        peakSP   = 0;
         state    = State::RUNNING;
         Serial.println("[秒錶] ▶ 計時開始！");
     }
@@ -85,6 +85,20 @@ namespace Stopwatch_Manager {
 
     void updateSP(uint16_t sp) {
         currentSP = sp;
-        if (state == State::RUNNING && sp > peakSP) peakSP = sp;
+    }
+
+    void clearHistory() {
+        runCount = 0;
+        frozenMs = 0;
+        currentSP = 0;
+        memset(runHistory, 0, sizeof(runHistory));
+        memset(runSP, 0, sizeof(runSP));
+
+        Preferences prefs;
+        prefs.begin("sw_store", false);
+        prefs.clear();
+        prefs.end();
+
+        Serial.println("🗑️ [秒錶] 歷史紀錄與 NVS 快取已成功清除！");
     }
 }

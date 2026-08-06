@@ -10,14 +10,10 @@
 
 namespace BLE_Manager {
     void toggleBluetooth();
-    // 🟢 引入 BLE 模組的轉速快取，準備在主執行緒繪圖
     extern uint16_t liveCurveBuffer[32];
     extern int liveCurveCount;
 }
 
-// ==========================================
-// 🛠️ 跨筆電字體強行解鎖修復 (繞過 lv_conf.h)
-// ==========================================
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -37,19 +33,21 @@ uint16_t global_all_time_best = 0;
 uint16_t global_history[8] = {0};
 int global_hist_count = 0;
 
-// ==========================================
-// [模組 2] LVGL 渲染器 (橫向超寬儀表板版)
-// ==========================================
+// Stopwatch NVS Persistent Storage
+uint32_t global_sw_longest_spin = 0;
+uint32_t global_sw_history_time[Stopwatch_Manager::MAX_RUNS] = {0};
+uint32_t global_sw_history_sp[Stopwatch_Manager::MAX_RUNS] = {0};
+int global_sw_hist_count = 0;
+
 namespace UI {
     volatile bool readyToDraw = false;
-
     volatile int requested_ble_state = 1;  
     static int current_rendered_state = -1; 
     
     static uint32_t go_shoot_timer = 0;
     static bool is_showing_go_shoot = false;
 
-    // LVGL 物件指標
+    // LVGL Objects
     lv_obj_t * scr;
     lv_obj_t * label_status;
     lv_obj_t * led_status;
@@ -60,19 +58,20 @@ namespace UI {
     lv_obj_t * label_battery; 
     lv_chart_series_t * chart_series;
 
-    // Panel containers and stopwatch widgets
+    // Panel containers & Stopwatch widgets
     lv_obj_t * panel_normal;
     lv_obj_t * panel_stopwatch;
     lv_obj_t * sw_arc;
-    lv_obj_t * sw_arc_sec_label;
     lv_obj_t * sw_run_label;
     lv_obj_t * sw_hist_label;
-    lv_obj_t * sw_values_canvas;
-    static constexpr lv_coord_t SW_VALUES_CANVAS_WIDTH = 270;
-    static constexpr lv_coord_t SW_VALUES_CANVAS_HEIGHT = 195;
-    lv_color_t * sw_values_canvas_buffer = nullptr;
+    
+    // Direct Labels
+    lv_obj_t * sw_cur_sp_val;
+    lv_obj_t * sw_longest_spin_val;
+    lv_obj_t * sw_time_label;
 
     static int current_displayed_rpm = 0;
+    static int current_displayed_sw_sp = 0;
 
     static void anim_text_update_cb(void * var, int32_t v) {
         lv_obj_t * label = (lv_obj_t *)var;
@@ -132,7 +131,22 @@ namespace UI {
         current_displayed_rpm = target_rpm;
     }    
 
-    // 🟢 輕量化即時轉速曲線繪製器
+    void updateStopwatchCurrentSP(int target_sp) {
+        if (!sw_cur_sp_val) return;
+        if (current_displayed_sw_sp == target_sp) return;
+
+        lv_anim_t a;
+        lv_anim_init(&a);
+        lv_anim_set_var(&a, sw_cur_sp_val);
+        lv_anim_set_values(&a, current_displayed_sw_sp, target_sp);
+        lv_anim_set_time(&a, 500);
+        lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
+        lv_anim_set_exec_cb(&a, anim_text_update_cb);
+        lv_anim_start(&a);
+
+        current_displayed_sw_sp = target_sp;
+    }
+
     void updateChartCurve(uint16_t* turnData, int turnCount) {
         if (!chart || !chart_series || turnCount <= 0) return;
 
@@ -156,6 +170,9 @@ namespace UI {
 
     void updateOfficialData(uint16_t origSP, uint16_t* history, int histCount) {
         updateCurrentRPM(origSP);
+        
+        // Pass official launch SP to Stopwatch_Manager if active
+        Stopwatch_Manager::updateSP(origSP);
 
         bool hasNewAllTimeBest = origSP > global_all_time_best;
         if (hasNewAllTimeBest) {
@@ -163,8 +180,8 @@ namespace UI {
             lv_label_set_text_fmt(label_all_time_rpm, "%d SP", global_all_time_best);
         }
 
-        global_hist_count = histCount;
-        for (int i = 0; i < histCount; i++) {
+        global_hist_count = constrain(histCount, 0, 8);
+        for (int i = 0; i < global_hist_count; i++) {
             global_history[i] = history[i];
         }
 
@@ -188,6 +205,47 @@ namespace UI {
         }
     }
 
+    void loadStopwatchNVS() {
+        prefs.begin("sw_store", true);
+        global_sw_longest_spin = prefs.getUInt("best_time", 0);
+        global_sw_hist_count = constrain(prefs.getInt("sw_cnt", 0), 0,
+                         Stopwatch_Manager::MAX_RUNS);
+        if (global_sw_hist_count > 0) {
+            prefs.getBytes("sw_time", global_sw_history_time, sizeof(global_sw_history_time));
+            prefs.getBytes("sw_sp", global_sw_history_sp, sizeof(global_sw_history_sp));
+            
+            Stopwatch_Manager::runCount = global_sw_hist_count;
+            for (int i = 0; i < global_sw_hist_count && i < 8; i++) {
+                Stopwatch_Manager::runHistory[i] = global_sw_history_time[i];
+                Stopwatch_Manager::runSP[i]      = (uint16_t)global_sw_history_sp[i];
+            }
+        }
+        prefs.end();
+    }
+
+    void saveStopwatchNVS() {
+        prefs.begin("sw_store", false);
+        prefs.putUInt("best_time", global_sw_longest_spin);
+        prefs.putInt("sw_cnt", global_sw_hist_count);
+        prefs.putBytes("sw_time", global_sw_history_time, sizeof(global_sw_history_time));
+        prefs.putBytes("sw_sp", global_sw_history_sp, sizeof(global_sw_history_sp));
+        prefs.end();
+    }
+
+    void clearStopwatchUI() {
+        global_sw_longest_spin = 0;
+        global_sw_hist_count = 0;
+        memset(global_sw_history_time, 0, sizeof(global_sw_history_time));
+        memset(global_sw_history_sp, 0, sizeof(global_sw_history_sp));
+
+        if (sw_time_label) lv_label_set_text(sw_time_label, "00:00");
+        if (sw_cur_sp_val) lv_label_set_text(sw_cur_sp_val, "0 SP");
+        if (sw_longest_spin_val) lv_label_set_text(sw_longest_spin_val, "--:--");
+        if (sw_run_label) lv_label_set_text(sw_run_label, "Run: 0");
+        if (sw_hist_label) lv_label_set_text(sw_hist_label, "—");
+        if (sw_arc) lv_arc_set_value(sw_arc, 0);
+    }
+
     void init() {
         lvgl_port_init();
         lcd_bl_pwm_bsp_init(LCD_PWM_MODE_255);
@@ -196,7 +254,10 @@ namespace UI {
         lv_obj_set_style_bg_color(scr, lv_color_black(), LV_PART_MAIN);
         lv_obj_set_style_text_color(scr, lv_color_white(), LV_PART_MAIN);
 
-        // ── Shared status bar — always visible in both modes ─────────────────────
+        // Load NVS data on startup
+        loadStopwatchNVS();
+
+        // ── Shared status bar ──────────────────────────────────────────
         led_status = lv_led_create(scr);
         lv_obj_align(led_status, LV_ALIGN_TOP_LEFT, 20, 16);
         lv_obj_set_size(led_status, 14, 14);
@@ -214,7 +275,7 @@ namespace UI {
         lv_obj_set_style_text_font(label_battery, &lv_font_montserrat_24, 0);
         lv_label_set_text(label_battery, "--% (--V) " LV_SYMBOL_BATTERY_FULL);
 
-        // ── Normal mode panel (820x320, transparent) ────────────────────────
+        // ── Normal mode panel ──────────────────────────────────────────
         panel_normal = lv_obj_create(scr);
         lv_obj_set_size(panel_normal, 820, 320);
         lv_obj_set_pos(panel_normal, 0, 0);
@@ -283,7 +344,7 @@ namespace UI {
         lv_obj_set_style_width(chart, 0, LV_PART_INDICATOR);
         lv_obj_set_style_height(chart, 0, LV_PART_INDICATOR);
 
-        // ── Stopwatch panel (hidden by default) ─────────────────────────────
+        // ── Stopwatch Panel ─────────────────────────────────────────────
         panel_stopwatch = lv_obj_create(scr);
         lv_obj_set_size(panel_stopwatch, 820, 320);
         lv_obj_set_pos(panel_stopwatch, 0, 0);
@@ -296,71 +357,71 @@ namespace UI {
         lv_obj_set_style_text_color(panel_stopwatch, lv_color_white(), 0);
         lv_obj_add_flag(panel_stopwatch, LV_OBJ_FLAG_HIDDEN);
 
-        // Left column — run counter + clock arc
+        // Left Column — Current SP & Longest Spin Record
+        lv_obj_t * sw_lbl_sp_title = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_lbl_sp_title, "CURRENT SP");
+        lv_obj_align(sw_lbl_sp_title, LV_ALIGN_TOP_LEFT, 20, 58);
+        lv_obj_set_style_text_color(sw_lbl_sp_title, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_font(sw_lbl_sp_title, &lv_font_montserrat_24, 0);
+
+        sw_cur_sp_val = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_cur_sp_val, "0 SP");
+        lv_obj_align(sw_cur_sp_val, LV_ALIGN_TOP_LEFT, 20, 90);
+        lv_obj_set_style_text_font(sw_cur_sp_val, &lv_font_montserrat_48, 0);
+
+        lv_obj_t * sw_lbl_longest_title = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_lbl_longest_title, "LONGEST SPIN");
+        lv_obj_align(sw_lbl_longest_title, LV_ALIGN_TOP_LEFT, 20, 175);
+        lv_obj_set_style_text_color(sw_lbl_longest_title, lv_palette_main(LV_PALETTE_AMBER), 0);
+        lv_obj_set_style_text_font(sw_lbl_longest_title, &lv_font_montserrat_24, 0);
+
+        sw_longest_spin_val = lv_label_create(panel_stopwatch);
+        if (global_sw_longest_spin > 0) {
+            uint32_t lm = global_sw_longest_spin / 60000;
+            uint32_t ls = (global_sw_longest_spin % 60000) / 1000;
+            lv_label_set_text_fmt(sw_longest_spin_val, "%02u:%02u", lm, ls);
+        } else {
+            lv_label_set_text(sw_longest_spin_val, "--:--");
+        }
+        lv_obj_align(sw_longest_spin_val, LV_ALIGN_TOP_LEFT, 20, 205);
+        lv_obj_set_style_text_color(sw_longest_spin_val, lv_palette_main(LV_PALETTE_AMBER), 0);
+        lv_obj_set_style_text_font(sw_longest_spin_val, &lv_font_montserrat_36, 0);
+
+        // Middle Column — Instrument Arc & Hero Timer
         sw_run_label = lv_label_create(panel_stopwatch);
         lv_label_set_text(sw_run_label, "Run: 0");
-        lv_obj_align(sw_run_label, LV_ALIGN_TOP_LEFT, 20, 58);
+        lv_obj_align(sw_run_label, LV_ALIGN_TOP_LEFT, 280, 58);
         lv_obj_set_style_text_color(sw_run_label, lv_palette_main(LV_PALETTE_GREY), 0);
         lv_obj_set_style_text_font(sw_run_label, &lv_font_montserrat_24, 0);
 
         sw_arc = lv_arc_create(panel_stopwatch);
         lv_obj_set_size(sw_arc, 200, 200);
-        lv_obj_align(sw_arc, LV_ALIGN_TOP_LEFT, 15, 82);
-        lv_arc_set_rotation(sw_arc, 270);          // 12 o\'clock start
-        lv_arc_set_bg_angles(sw_arc, 0, 360);       // full-circle background track
-        lv_arc_set_range(sw_arc, 0, 360);           // maps to 0-60000ms (1 full turn = 1 minute)
+        lv_obj_align(sw_arc, LV_ALIGN_TOP_LEFT, 275, 82);
+        lv_arc_set_rotation(sw_arc, 270);
+        lv_arc_set_bg_angles(sw_arc, 0, 360);
+        lv_arc_set_range(sw_arc, 0, 360);
         lv_arc_set_value(sw_arc, 0);
         lv_arc_set_mode(sw_arc, LV_ARC_MODE_NORMAL);
-        lv_obj_clear_flag(sw_arc, LV_OBJ_FLAG_CLICKABLE);  // display-only, no drag/knob interaction
+        lv_obj_clear_flag(sw_arc, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_MAIN);
-        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x2a2a2a), LV_PART_MAIN);
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x1C1C1E), LV_PART_MAIN);
         lv_obj_set_style_arc_width(sw_arc, 10, LV_PART_INDICATOR);
-        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0xFF5500), LV_PART_INDICATOR);
+        lv_obj_set_style_arc_color(sw_arc, lv_color_hex(0x00E5FF), LV_PART_INDICATOR);
         lv_obj_set_style_width(sw_arc, 0, LV_PART_KNOB);
         lv_obj_set_style_height(sw_arc, 0, LV_PART_KNOB);
-        lv_obj_set_style_pad_all(sw_arc, 0, LV_PART_KNOB);       // theme default knob padding was the "blue ball"
+        lv_obj_set_style_pad_all(sw_arc, 0, LV_PART_KNOB);
         lv_obj_set_style_bg_opa(sw_arc, LV_OPA_TRANSP, LV_PART_KNOB);
         lv_obj_set_style_border_width(sw_arc, 0, LV_PART_KNOB);
 
-        sw_arc_sec_label = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_arc_sec_label, "0");
-        lv_obj_set_width(sw_arc_sec_label, 80);
-        lv_obj_align(sw_arc_sec_label, LV_ALIGN_TOP_LEFT, 75, 162);
-        lv_obj_set_style_text_align(sw_arc_sec_label, LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_set_style_text_font(sw_arc_sec_label, &lv_font_montserrat_36, 0);
+        // Centered Hero Timer
+        sw_time_label = lv_label_create(panel_stopwatch);
+        lv_label_set_text(sw_time_label, "00:00");
+        lv_obj_set_width(sw_time_label, 190);
+        lv_obj_align(sw_time_label, LV_ALIGN_TOP_LEFT, 280, 162);
+        lv_obj_set_style_text_align(sw_time_label, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_font(sw_time_label, &lv_font_montserrat_48, 0);
 
-        // Middle column — current SP + large timer + peak SP
-        lv_obj_t * sw_lbl_sp_title = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_lbl_sp_title, "CURRENT SP");
-        lv_obj_align(sw_lbl_sp_title, LV_ALIGN_TOP_LEFT, 280, 58);
-        lv_obj_set_style_text_color(sw_lbl_sp_title, lv_palette_main(LV_PALETTE_GREY), 0);
-        lv_obj_set_style_text_font(sw_lbl_sp_title, &lv_font_montserrat_24, 0);
-
-        // The frequently changing numbers share one RAM-backed canvas, so LVGL
-        // presents a complete timer frame rather than individually updated labels.
-        sw_values_canvas_buffer = static_cast<lv_color_t *>(heap_caps_malloc(
-            SW_VALUES_CANVAS_WIDTH * SW_VALUES_CANVAS_HEIGHT * sizeof(lv_color_t),
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
-        if (!sw_values_canvas_buffer) {
-            sw_values_canvas_buffer = static_cast<lv_color_t *>(heap_caps_malloc(
-                SW_VALUES_CANVAS_WIDTH * SW_VALUES_CANVAS_HEIGHT * sizeof(lv_color_t),
-                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        }
-        if (sw_values_canvas_buffer) {
-            sw_values_canvas = lv_canvas_create(panel_stopwatch);
-            lv_canvas_set_buffer(sw_values_canvas, sw_values_canvas_buffer,
-                                 SW_VALUES_CANVAS_WIDTH, SW_VALUES_CANVAS_HEIGHT,
-                                 LV_IMG_CF_TRUE_COLOR);
-            lv_obj_align(sw_values_canvas, LV_ALIGN_TOP_LEFT, 280, 82);
-        }
-
-        lv_obj_t * sw_lbl_peak_title = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_lbl_peak_title, "PEAK SP");
-        lv_obj_align(sw_lbl_peak_title, LV_ALIGN_TOP_LEFT, 280, 207);
-        lv_obj_set_style_text_color(sw_lbl_peak_title, lv_palette_main(LV_PALETTE_AMBER), 0);
-        lv_obj_set_style_text_font(sw_lbl_peak_title, &lv_font_montserrat_24, 0);
-
-        // Right column — run history
+        // Right Column — Run History
         lv_obj_t * sw_lbl_hist_title = lv_label_create(panel_stopwatch);
         lv_label_set_text(sw_lbl_hist_title, "RUN HISTORY");
         lv_obj_align(sw_lbl_hist_title, LV_ALIGN_TOP_LEFT, 570, 58);
@@ -368,12 +429,28 @@ namespace UI {
         lv_obj_set_style_text_font(sw_lbl_hist_title, &lv_font_montserrat_24, 0);
 
         sw_hist_label = lv_label_create(panel_stopwatch);
-        lv_label_set_text(sw_hist_label, "\u2014");
+        lv_label_set_text(sw_hist_label, "—");
         lv_obj_align(sw_hist_label, LV_ALIGN_TOP_LEFT, 570, 82);
         lv_obj_set_style_text_font(sw_hist_label, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_line_space(sw_hist_label, 4, 0);
+
+        // Populate history text on boot (NEWEST/LATEST RUN AT TOP)
+        if (global_sw_hist_count > 0) {
+            char histText[384];
+            size_t pos = 0;
+            int total = global_sw_hist_count;
+            int displayNum = total;
+            for (int i = total - 1; i >= 0 && displayNum > (total > 6 ? total - 6 : 0); i--) {
+                uint32_t rm = global_sw_history_time[i] / 60000;
+                uint32_t rs = (global_sw_history_time[i] % 60000) / 1000;
+                uint32_t sp = global_sw_history_sp[i];
+                pos += snprintf(histText + pos, sizeof(histText) - pos,
+                                 "%d. %02u:%02u • %u SP\n", displayNum--, rm, rs, sp);
+            }
+            lv_label_set_text(sw_hist_label, histText);
+        }
     } 
-     // 🟢 繪製大紅電池低電量關機警告畫面
+
     void showLowBatteryScreen() {
         lv_obj_t * overlay = lv_obj_create(scr);
         lv_obj_set_size(overlay, LV_PCT(100), LV_PCT(100));
@@ -381,14 +458,12 @@ namespace UI {
         lv_obj_set_style_bg_color(overlay, lv_color_black(), 0);
         lv_obj_set_style_border_width(overlay, 0, 0);
 
-        // 大紅電池圖示
         lv_obj_t * icon = lv_label_create(overlay);
         lv_label_set_text(icon, LV_SYMBOL_BATTERY_EMPTY);
         lv_obj_set_style_text_color(icon, lv_palette_main(LV_PALETTE_RED), 0);
         lv_obj_set_style_text_font(icon, &lv_font_montserrat_48, 0);
         lv_obj_align(icon, LV_ALIGN_CENTER, 0, -35);
 
-        // 警告警示文字
         lv_obj_t * msg = lv_label_create(overlay);
         lv_label_set_text(msg, "LOW BATTERY\nPLEASE CHARGE");
         lv_obj_set_style_text_color(msg, lv_palette_main(LV_PALETTE_RED), 0);
@@ -396,16 +471,15 @@ namespace UI {
         lv_obj_set_style_text_align(msg, LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_align(msg, LV_ALIGN_CENTER, 0, 35);
 
-        // 強制刷新 LVGL 畫面渲染
         lv_timer_handler();
     }
+
     void updateStatus(int state) {
         if (state >= 0 && state <= 3) {
             requested_ble_state = state;
         }
     }
 
-    // ── Panel slide animation ───────────────────────────────────────
     static void panel_anim_x_cb(void* obj, int32_t v) {
         lv_obj_set_x((lv_obj_t*)obj, v);
     }
@@ -430,7 +504,6 @@ namespace UI {
         lv_anim_start(&a);
     }
     void enterStopwatchMode() {
-        // force top-bar state refresh on first display frame
         current_rendered_state = -1;
         _slide_panels(panel_normal, panel_stopwatch, 1);
     }
@@ -438,54 +511,98 @@ namespace UI {
         _slide_panels(panel_stopwatch, panel_normal, -1);
     }
 
-    // ── Stopwatch display update (called every frame in stopwatch mode) ─────
     void updateStopwatchDisplay() {
-        if (!sw_values_canvas) return;
         int64_t ms  = Stopwatch_Manager::elapsedMs();
         int     min = (int)(ms / 60000);
         int     sec = (int)((ms % 60000) / 1000);
-        int     cs  = (int)((ms % 1000) / 10);
 
-        static int lastMin = -1, lastSec = -1, lastCs = -1;
-        static int lastCurSP = -1, lastPeakSP = -1;
-        int curSP  = (int)Stopwatch_Manager::currentSP;
-        int peakSP = (int)Stopwatch_Manager::peakSP;
-        if (min != lastMin || sec != lastSec || cs != lastCs ||
-            curSP != lastCurSP || peakSP != lastPeakSP) {
+        static int lastMin = -1, lastSec = -1;
+        if (min != lastMin || sec != lastSec) {
             lastMin = min;
             lastSec = sec;
-            lastCs = cs;
-            lastCurSP = curSP;
-            lastPeakSP = peakSP;
-
-            lv_draw_label_dsc_t label_dsc;
-            lv_draw_label_dsc_init(&label_dsc);
-            label_dsc.color = lv_color_white();
-            lv_canvas_fill_bg(sw_values_canvas, lv_color_black(), LV_OPA_COVER);
-
-            char value[16];
-            label_dsc.font = &lv_font_montserrat_36;
-            snprintf(value, sizeof(value), "%d SP", curSP);
-            lv_canvas_draw_text(sw_values_canvas, 0, 0, SW_VALUES_CANVAS_WIDTH,
-                                &label_dsc, value);
-
-            label_dsc.font = &lv_font_montserrat_48;
-            snprintf(value, sizeof(value), "%02d:%02d.%02d", min, sec, cs);
-            lv_canvas_draw_text(sw_values_canvas, 0, 58, SW_VALUES_CANVAS_WIDTH,
-                                &label_dsc, value);
-
-            label_dsc.font = &lv_font_montserrat_36;
-            label_dsc.color = lv_palette_main(LV_PALETTE_AMBER);
-            snprintf(value, sizeof(value), "%d SP", peakSP);
-            lv_canvas_draw_text(sw_values_canvas, 0, 152, SW_VALUES_CANVAS_WIDTH,
-                                &label_dsc, value);
+            lv_label_set_text_fmt(sw_time_label, "%02d:%02d", min, sec);
         }
 
-        static int lastArcSec = -1;
-        if (sec != lastArcSec) {
-            lastArcSec = sec;
-            lv_label_set_text_fmt(sw_arc_sec_label, "%d", sec);
+        // Animated Rolling Number for Current SP
+        int curSP = (int)Stopwatch_Manager::currentSP;
+        updateStopwatchCurrentSP(curSP);
+
+        // 🟢 徹底分離：唯讀載入已完成的歷史紀錄，絕不改寫 Stopwatch_Manager 的狀態！
+        int completedCount = Stopwatch_Manager::runCount;
+        if (completedCount > 0 && completedCount <= 8) {
+            for (int i = 0; i < completedCount; i++) {
+                global_sw_history_time[i] = Stopwatch_Manager::runHistory[i];
+                global_sw_history_sp[i]   = (uint32_t)Stopwatch_Manager::runSP[i];
+
+                if (global_sw_history_time[i] > global_sw_longest_spin) {
+                    global_sw_longest_spin = global_sw_history_time[i];
+                }
+            }
+            global_sw_hist_count = completedCount;
         }
+
+        // ⚡ 當經歷一次完整的 Run 結束 (runCount 增加)，將最新完成的歷史數據存入 NVS
+        static int lastSavedRunCount = -1;
+        if (completedCount != lastSavedRunCount) {
+            lastSavedRunCount = completedCount;
+            saveStopwatchNVS();
+        }
+
+        // 🏷️ Run 標籤顯示邏輯：如果當前正在進行新的一輪 (ARMED/RUNNING)，Run 數為 completedCount + 1
+        bool isActiveRun = (Stopwatch_Manager::state == Stopwatch_Manager::State::RUNNING || 
+                            Stopwatch_Manager::state == Stopwatch_Manager::State::ARMED);
+        int currentRunNumber = isActiveRun ? (completedCount + 1) : completedCount;
+        if (currentRunNumber == 0) currentRunNumber = 0;
+
+        char runBuf[16];
+        snprintf(runBuf, sizeof(runBuf), "Run: %d", currentRunNumber);
+        lv_label_set_text(sw_run_label, runBuf);
+
+        // 📜 歷史列表渲染邏輯 (最上方顯示最新項目)
+        char histText[384];
+        size_t pos = 0;
+
+        // 1. 如果當前有進行中的 Run (ARMED/RUNNING)，在歷史列表最頂端獨立渲染即時動態行！
+        if (isActiveRun) {
+            uint32_t activeMs = (uint32_t)ms;
+            uint32_t rm = activeMs / 60000;
+            uint32_t rs = (activeMs % 60000) / 1000;
+            pos += snprintf(histText + pos, sizeof(histText) - pos,
+                             "%d. %02u:%02u • %u SP\n", currentRunNumber, rm, rs, curSP);
+        }
+
+        // 2. 隨後由新到舊 (completedCount - 1 下降至 0) 渲染所有已完成的歷史條目
+        int printedCompleted = 0;
+        int maxCompletedToPrint = isActiveRun ? 5 : 6; // 保留空間顯示最多 6 行
+        for (int i = completedCount - 1; i >= 0 && printedCompleted < maxCompletedToPrint; i--) {
+            uint32_t rm = global_sw_history_time[i] / 60000;
+            uint32_t rs = (global_sw_history_time[i] % 60000) / 1000;
+            uint32_t sp = global_sw_history_sp[i];
+            pos += snprintf(histText + pos, sizeof(histText) - pos,
+                             "%d. %02u:%02u • %u SP\n", (i + 1), rm, rs, sp);
+            printedCompleted++;
+        }
+
+        if (pos > 0) {
+            lv_label_set_text(sw_hist_label, histText);
+        } else {
+            lv_label_set_text(sw_hist_label, "—");
+        }
+
+        // Update Longest Spin record display
+        static uint32_t lastLongestMs = 0xFFFFFFFF;
+        if (global_sw_longest_spin != lastLongestMs) {
+            lastLongestMs = global_sw_longest_spin;
+            if (global_sw_longest_spin > 0) {
+                uint32_t lm = global_sw_longest_spin / 60000;
+                uint32_t ls = (global_sw_longest_spin % 60000) / 1000;
+                lv_label_set_text_fmt(sw_longest_spin_val, "%02u:%02u", lm, ls);
+            } else {
+                lv_label_set_text(sw_longest_spin_val, "--:--");
+            }
+        }
+
+        // Continuous Apple Watch style sweep (0-360 deg per 60000 ms)
         int arcValue = (int)((ms % 60000) * 360 / 60000);
         static int lastArcValue = -1;
         if (arcValue != lastArcValue) {
@@ -493,15 +610,6 @@ namespace UI {
             lv_arc_set_value(sw_arc, arcValue);
         }
 
-        static int lastRunCount = -1;
-        bool runCountChanged = (Stopwatch_Manager::runCount != lastRunCount);
-        if (runCountChanged) {
-            lastRunCount = Stopwatch_Manager::runCount;
-            char runBuf[16];
-            snprintf(runBuf, sizeof(runBuf), "Run: %d", Stopwatch_Manager::runCount);
-            lv_label_set_text(sw_run_label, runBuf);
-        }
-        // Reflect stopwatch state in the shared top-bar status indicator
         static Stopwatch_Manager::State lastRenderedState = Stopwatch_Manager::State::IDLE;
         if (Stopwatch_Manager::state != lastRenderedState) {
             lastRenderedState = Stopwatch_Manager::state;
@@ -523,22 +631,6 @@ namespace UI {
                     lv_label_set_text(label_status, "STOPWATCH IDLE");
                     break;
             }
-        }
-        int total = Stopwatch_Manager::runCount;
-        if (total > 0 && runCountChanged) {
-            // Build with a fixed stack buffer, not Arduino String — avoids per-frame
-            // heap alloc/free churn that was contending with the LVGL render task's mutex.
-            char histText[256];
-            size_t pos = 0;
-            int start = (total > 6) ? (total - 6) : 0;
-            for (int i = start; i < total && pos < sizeof(histText) - 32; i++) {
-                uint32_t rm = Stopwatch_Manager::runHistory[i] / 60000;
-                uint32_t rs = (Stopwatch_Manager::runHistory[i] % 60000) / 1000;
-                uint32_t rc = (Stopwatch_Manager::runHistory[i] % 1000) / 10;
-                pos += snprintf(histText + pos, sizeof(histText) - pos,
-                                 "%d. %u:%02u.%02u\n", i + 1, rm, rs, rc);
-            }
-            lv_label_set_text(sw_hist_label, histText);
         }
     }
 
@@ -563,6 +655,19 @@ namespace UI {
 
     void handleUpdate() {
         if (Stopwatch_Manager::isStopwatchMode) {
+            // Live capture of launcher RPM into Stopwatch_Manager during active BLE updates
+            if (BLE_Manager::liveCurveCount > 0) {
+                uint16_t maxLiveRpm = 0;
+                for (int i = 0; i < BLE_Manager::liveCurveCount; i++) {
+                    if (BLE_Manager::liveCurveBuffer[i] > maxLiveRpm && BLE_Manager::liveCurveBuffer[i] < 18000) {
+                        maxLiveRpm = BLE_Manager::liveCurveBuffer[i];
+                    }
+                }
+                if (maxLiveRpm > 0) {
+                    Stopwatch_Manager::updateSP(maxLiveRpm);
+                }
+            }
+
             static unsigned long lastSwFrameMs = 0;
             unsigned long now = millis();
             if (now - lastSwFrameMs >= 20) {
@@ -574,10 +679,9 @@ namespace UI {
         if (readyToDraw) {
             readyToDraw = false; 
             
-            // 🟢 修正 2：在主迴圈中安全地呼叫 LVGL 繪圖，完美避開當機與掉幀！
             if (BLE_Manager::liveCurveCount > 0) {
                 updateChartCurve(BLE_Manager::liveCurveBuffer, BLE_Manager::liveCurveCount);
-                BLE_Manager::liveCurveCount = 0; // 畫完後清空，等待下次發射
+                BLE_Manager::liveCurveCount = 0;
             }
             
             requested_ble_state = 1; 

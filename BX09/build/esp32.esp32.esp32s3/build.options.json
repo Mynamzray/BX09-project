@@ -1,0 +1,10 @@
+{
+  "additionalFiles": "..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..,..\\..\\..\\..,..\\..,..\\..,..\\..,..\\..,..\\..\\..,..\\..\\..,..\\..\\..,..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..\\..\\..,..\\..",
+  "builtInLibrariesFolders": "C:\\Users\\user\\AppData\\Local\\Arduino15\\libraries",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "",
+  "fqbn": "esp32:esp32:esp32s3:UploadSpeed=115200,USBMode=hwcdc,CDCOnBoot=cdc,MSCOnBoot=default,DFUOnBoot=default,UploadMode=default,CPUFreq=240,FlashMode=qio,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB,DebugLevel=none,PSRAM=opi,LoopCore=1,EventsCore=0,EraseFlash=none,JTAGAdapter=default,ZigbeeMode=default",
+  "hardwareFolders": "C:\\Users\\user\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.8,C:\\Users\\user\\AppData\\Local\\Arduino15\\packages\\esp32\\hardware\\esp32\\3.3.8",
+  "otherLibrariesFolders": "c:\\Users\\user\\Documents\\Arduino\\libraries",
+  "sketchLocation": "C:\\Users\\user\\OneDrive\\Arduino (10.6.0.2)\\BX09\\BX09 project\\BX09"
+}
